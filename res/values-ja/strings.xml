@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <string name="network_scan_msg">メディアファイルをインデックス中</string>
+    <string name="network_unscan_msg">ライブラリからメディアファイルを削除中</string>
+    <string name="nfo_export_category">メディア情報のエクスポート</string>
+    <string name="nfo_export_button">.nfo をエクスポート</string>
+    <string name="nfo_export_all">ライブラリ全体を .nfo にエクスポート</string>
+    <string name="nfo_export_in_progress">NFO エクスポート中</string>
+    <string name="rescrap_in_progress">ライブラリ全体の情報を再取得中</string>
+    <string name="rescrap_all_title">すべて再取得</string>
+    <string name="trakt_toast_syncing_error">Trakt と同期できませんでした</string>
+</resources>
