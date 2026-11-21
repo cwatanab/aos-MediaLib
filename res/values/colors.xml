@@ -87,55 +87,55 @@
     <color name="transparent_grey">#AA37474F</color>
     <color name="lightgrey">#363636</color>
 
-    <!-- Theme-aware colors (use these instead of hard-coded values) -->
-    <color name="theme_primary_blue">@color/lightblue500</color>
-    <color name="theme_primary_black">@color/lightgrey</color>
-    <color name="theme_primary_blue_alpha50">@color/lightblue900_alpha50</color>
-    <color name="theme_primary_black_alpha50">#80363636</color>
-    <color name="theme_accent_blue">@color/lightblue400</color>
-    <color name="theme_accent_black">#ff909090</color>
+    <!-- Theme-aware colors (modern tvOS-inspired dark palette) -->
+    <color name="theme_primary_blue">#FF0A84FF</color>
+    <color name="theme_primary_black">#FF1C2230</color>
+    <color name="theme_primary_blue_alpha50">#800F172A</color>
+    <color name="theme_primary_black_alpha50">#80121620</color>
+    <color name="theme_accent_blue">#FF64D2FF</color>
+    <color name="theme_accent_black">#FF64D2FF</color>
     
-    <color name="theme_background_blue">@color/leanback_background</color>
-    <color name="theme_background_black">#ff000000</color>
+    <color name="theme_background_blue">#FF090D16</color>
+    <color name="theme_background_black">#FF0A0D14</color>
     
-    <color name="theme_toolbar_blue">@color/leanback_background</color>
-    <color name="theme_toolbar_black">@color/lightgrey</color>
+    <color name="theme_toolbar_blue">#FF0F1524</color>
+    <color name="theme_toolbar_black">#FF121620</color>
     
-    <color name="theme_header_blue">@color/lightblue900</color>
-    <color name="theme_header_black">@color/lightgrey</color>
+    <color name="theme_header_blue">#FF0F1524</color>
+    <color name="theme_header_black">#FF121620</color>
     
-    <color name="theme_details_primary_blue">@color/lightblue900</color>
-    <color name="theme_details_primary_black">#ff424242</color>
+    <color name="theme_details_primary_blue">#FF111827</color>
+    <color name="theme_details_primary_black">#FF141822</color>
     
-    <color name="theme_details_secondary_blue">@color/lightblue700</color>
-    <color name="theme_details_secondary_black">#ff616161</color>
+    <color name="theme_details_secondary_blue">#FF192236</color>
+    <color name="theme_details_secondary_black">#FF1C2230</color>
     
-    <color name="theme_grid_item_blue">#ff012643</color>
-    <color name="theme_grid_item_black">#ff363636</color>     <!-- Dark grey visible on black background -->
+    <color name="theme_grid_item_blue">#FF161D2E</color>
+    <color name="theme_grid_item_black">#FF1A202E</color>
     
-    <color name="theme_category_selector_blue">@color/lightblue800</color>
-    <color name="theme_category_selector_black">@color/lightgrey</color>
+    <color name="theme_category_selector_blue">#FF1E2A42</color>
+    <color name="theme_category_selector_black">#FF232A3B</color>
     
-    <color name="theme_list_pressed_blue">#ff33b5e5</color>
-    <color name="theme_list_pressed_black">@color/lightgrey</color>
+    <color name="theme_list_pressed_blue">#FF0A84FF</color>
+    <color name="theme_list_pressed_black">#FF2C3447</color>
     
-    <color name="theme_list_focused_blue">#ff0070a0</color>
-    <color name="theme_list_focused_black">@color/lightgrey</color>
+    <color name="theme_list_focused_blue">#FF1E3A5F</color>
+    <color name="theme_list_focused_black">#FF283044</color>
     
-    <color name="theme_rescan_blue">#ff2e7d32</color>
-    <color name="theme_rescan_black">#ff1b5e20</color>
+    <color name="theme_rescan_blue">#FF1E6F50</color>
+    <color name="theme_rescan_black">#FF175740</color>
     
     <!-- Private mode colors - themed for blue and black themes -->
-    <color name="theme_private_mode_blue">#ff001b30</color>      <!-- Dark navy blue for blue theme -->
-    <color name="theme_private_mode_black">#ff1a1a1a</color>     <!-- Dark charcoal for black theme -->
+    <color name="theme_private_mode_blue">#FF0B1324</color>
+    <color name="theme_private_mode_black">#FF141418</color>
     
-    <color name="theme_gradient_start_blue">#ff002643</color>
-    <color name="theme_gradient_start_black">#ff000000</color>
-    <color name="theme_gradient_end_blue">#ff013a67</color>
-    <color name="theme_gradient_end_black">#ff363636</color>
+    <color name="theme_gradient_start_blue">#FF070B14</color>
+    <color name="theme_gradient_start_black">#FF080B12</color>
+    <color name="theme_gradient_end_blue">#FF131D36</color>
+    <color name="theme_gradient_end_black">#FF151B2B</color>
     
-    <color name="theme_search_affordance_blue">@color/lightblueA200</color>
-    <color name="theme_search_affordance_black">@color/lightblueA200</color>
+    <color name="theme_search_affordance_blue">#FF1F2B44</color>
+    <color name="theme_search_affordance_black">#FF232A3C</color>
     
     <!-- Centralized UI accent colors - change these to theme the entire app (e.g., yellow theme) -->
     <!-- These are currently blue but can be changed to any accent color for future theming -->
