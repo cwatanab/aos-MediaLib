@@ -32,6 +32,8 @@ import org.jupnp.support.contentdirectory.callback.Browse;
 import org.jupnp.support.model.BrowseFlag;
 import org.jupnp.support.model.DIDLContent;
 import org.jupnp.support.model.DIDLObject;
+import org.jupnp.support.model.ProtocolInfo;
+import org.jupnp.support.model.Res;
 import org.jupnp.support.model.container.Container;
 import org.jupnp.support.model.item.Item;
 import org.slf4j.Logger;
@@ -89,11 +91,10 @@ public class UpnpRawLister extends RawLister  {
         mDevice = mUpnpServiceManager.getDeviceByKey_blocking(Integer.parseInt(mUri.getHost()), 500); // NPE on subs listing
 
         // Container ID is encoded at the end of the Uri, need to decode it here
-        try {
-            String lastPathSegment = FileUtils.getName(mUri);
-            if(lastPathSegment!=null)
-                mContainerId = URLDecoder.decode(lastPathSegment, "UTF-8");
-        } catch (UnsupportedEncodingException e) { /* does not happen, UTF-8 always available... */ }
+        String lastPathSegment = FileUtils.getName(mUri);
+        if (lastPathSegment != null) {
+            mContainerId = Uri.decode(lastPathSegment);
+        }
     }
 
     //some device specific restrictions
@@ -137,8 +138,15 @@ public class UpnpRawLister extends RawLister  {
                 // All files matching the filter
                 for (Item item : content.getItems()){
                     boolean match = true;
-                    String mimeType = item.getFirstResource().getProtocolInfo().getContentFormatMimeType().toString();
-                    String path = item.getFirstResource().getValue();
+                    Res res = item.getFirstResource();
+                    if (res == null) {
+                        log.warn("received: item has no resource, skipping: {}", item.getTitle());
+                        continue;
+                    }
+                    ProtocolInfo protocolInfo = res.getProtocolInfo();
+                    String mimeType = (protocolInfo != null && protocolInfo.getContentFormatMimeType() != null)
+                            ? protocolInfo.getContentFormatMimeType().toString() : null;
+                    String path = res.getValue();
                     if (match){
                         Uri thumbUri = null;
                         DIDLObject.Property<URI> albumArtURI = item.getFirstProperty(DIDLObject.Property.UPNP.ALBUM_ART_URI.class);

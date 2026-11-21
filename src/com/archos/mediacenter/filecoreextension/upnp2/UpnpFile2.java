@@ -17,6 +17,7 @@ package com.archos.mediacenter.filecoreextension.upnp2;
 import android.content.Context;
 import android.net.Uri;
 import android.util.Log;
+import java.util.Locale;
 
 import com.archos.filecorelibrary.FileEditor;
 import com.archos.filecorelibrary.MetaFile2;
@@ -78,7 +79,8 @@ public class UpnpFile2 extends MetaFile2 {
         mName = item.getTitle();
         mMimeType = mimeType;
         mIsDirectory = false;
-        mLength = item.getFirstResource().getSize();
+        Long size = item.getFirstResource().getSize();
+        mLength = size != null ? size : -1L;
         mStreamingUri = contentPath;
         mContentPath = contentPath;
         if(thumbnailUri!=null)
@@ -175,7 +177,7 @@ public class UpnpFile2 extends MetaFile2 {
     }
 
     public String getUniqueHash(){
-        return "H" + String.format("%018x", Math.abs(getUri().hashCode()) + length() * Math.abs(getName().hashCode()));
+        return "H" + String.format(Locale.ROOT, "%018x", Math.abs(getUri().hashCode()) + length() * Math.abs(getName().hashCode()));
     }
 
     @Override
@@ -222,7 +224,9 @@ public class UpnpFile2 extends MetaFile2 {
             try {
                 List<MetaFile2> files = lister.getFileList();
                 for(MetaFile2 file : files){
-                    if(file.getUri().equals(uri)){
+                    if (file.getUri().equals(uri) ||
+                            (file.getUri() != null && Uri.decode(file.getUri().toString()).equals(Uri.decode(uri.toString()))) ||
+                            (FileUtils.getName(file.getUri()) != null && FileUtils.getName(file.getUri()).equals(FileUtils.getName(uri)))) {
                         return file;
                     }
                 }

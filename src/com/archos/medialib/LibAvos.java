@@ -18,6 +18,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 
+import androidx.annotation.RequiresApi;
 import android.content.Context;
 import android.os.Build;
 import android.util.Log;
@@ -32,6 +33,119 @@ public class LibAvos {
     private static boolean sPluginUpdateNeeded = false;
     private static int sInitState = 0;
     private static final String NO_NEON_SUFFIX = "_no_neon";
+
+    public interface AudioRouteListener { void onAudioRouteChanged(); }
+    private static AudioRouteListener sAudioRouteListener;
+    private static final android.os.Handler sRouteHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static android.media.AudioTrack sObservedTrack;
+    private static android.media.AudioDeviceInfo sRoutedDevice;
+    private static Object sRoutingListener;
+
+    public static void setAudioRouteListener(AudioRouteListener listener) {
+        sAudioRouteListener = listener;
+    }
+
+    // Called on the main thread by the application. Null means no route proof yet.
+    public static android.media.AudioDeviceInfo getRoutedAudioDevice() { return sRoutedDevice; }
+
+    @RequiresApi(api = Build.VERSION_CODES.N)
+    private static class AudioRoutingApi24 {
+        static Object createListener() {
+            return (android.media.AudioRouting.OnRoutingChangedListener) router -> {
+                if (router instanceof android.media.AudioTrack) {
+                    publishAudioRoute((android.media.AudioTrack) router);
+                }
+            };
+        }
+
+        static void addListener(android.media.AudioTrack track, Object listener, android.os.Handler handler) {
+            if (listener instanceof android.media.AudioRouting.OnRoutingChangedListener) {
+                track.addOnRoutingChangedListener((android.media.AudioRouting.OnRoutingChangedListener) listener, handler);
+            }
+        }
+
+        static void removeListener(android.media.AudioTrack track, Object listener) {
+            if (listener instanceof android.media.AudioRouting.OnRoutingChangedListener) {
+                track.removeOnRoutingChangedListener((android.media.AudioRouting.OnRoutingChangedListener) listener);
+            }
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static class AudioRoutingApi23 {
+        static Object createListener() {
+            return (android.media.AudioTrack.OnRoutingChangedListener) LibAvos::publishAudioRoute;
+        }
+
+        static void addListener(android.media.AudioTrack track, Object listener, android.os.Handler handler) {
+            if (listener instanceof android.media.AudioTrack.OnRoutingChangedListener) {
+                track.addOnRoutingChangedListener((android.media.AudioTrack.OnRoutingChangedListener) listener, handler);
+            }
+        }
+
+        static void removeListener(android.media.AudioTrack track, Object listener) {
+            if (listener instanceof android.media.AudioTrack.OnRoutingChangedListener) {
+                track.removeOnRoutingChangedListener((android.media.AudioTrack.OnRoutingChangedListener) listener);
+            }
+        }
+    }
+
+    // Called from native AudioTrack creation/close threads; all ownership is on main.
+    public static void observeAudioRoute(android.media.AudioTrack track) {
+        sRouteHandler.post(() -> {
+            if (sObservedTrack != null && sRoutingListener != null) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        AudioRoutingApi24.removeListener(sObservedTrack, sRoutingListener);
+                    } else {
+                        AudioRoutingApi23.removeListener(sObservedTrack, sRoutingListener);
+                    }
+                } catch (RuntimeException ignored) { }
+            }
+            sObservedTrack = track;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                sRoutingListener = AudioRoutingApi24.createListener();
+            } else {
+                sRoutingListener = AudioRoutingApi23.createListener();
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    AudioRoutingApi24.addListener(track, sRoutingListener, sRouteHandler);
+                } else {
+                    AudioRoutingApi23.addListener(track, sRoutingListener, sRouteHandler);
+                }
+                publishAudioRoute(track);
+            } catch (RuntimeException ignored) { }
+        });
+    }
+
+    private static void publishAudioRoute(android.media.AudioTrack track) {
+        if (track != sObservedTrack) return;
+        android.media.AudioDeviceInfo device;
+        try { device = track.getRoutedDevice(); }
+        catch (RuntimeException ignored) { return; }
+        if (device == null) return; // A paused track is not evidence of a new route.
+        sRoutedDevice = device;
+        if (sAudioRouteListener != null) sAudioRouteListener.onAudioRouteChanged();
+    }
+
+    public static void forgetAudioRoute(android.media.AudioTrack track) {
+        sRouteHandler.post(() -> {
+            if (sObservedTrack != track) return;
+            try {
+                if (sRoutingListener != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        AudioRoutingApi24.removeListener(track, sRoutingListener);
+                    } else {
+                        AudioRoutingApi23.removeListener(track, sRoutingListener);
+                    }
+                }
+            } catch (RuntimeException ignored) { }
+            sObservedTrack = null;
+            sRoutingListener = null;
+            sRoutedDevice = null;
+        });
+    }
 
     public interface AudioTransformer {
 	    float[] transformAudio(float[] samples);
@@ -269,6 +383,10 @@ public class LibAvos {
         nativeSetAudioInterface(audio_interface);
     }
 
+    public static void setAudioDecoder(int audioDecoder) {
+        nativeSetAudioDecoder(audioDecoder);
+    }
+
     public static void setCodepage(int codepage) {
         if (DBG) Log.d(TAG, "setCodepage: " + codepage);
         nativeSetCodepage(codepage);
@@ -286,6 +404,18 @@ public class LibAvos {
         nativeSetHdmiSupportedAudioCodecs(hdmiAudioCodecsFlag);
     }
 
+    public static void setMediaCodecAudioCapabilities(long mediaCodecAudioCapabilities) {
+        nativeSetMediaCodecAudioCapabilities(mediaCodecAudioCapabilities);
+    }
+
+    public static void setSpatializerCapabilities(int spatializerCapabilities) {
+        nativeSetSpatializerCapabilities(spatializerCapabilities);
+    }
+
+    public static void setSpatializerEnabled(boolean enabled) {
+        nativeSetSpatializerEnabled(enabled);
+    }
+
     public static void setMaxPcmChannels(int maxChannels) {
         nativeSetMaxPcmChannels(maxChannels);
     }
@@ -299,9 +429,8 @@ public class LibAvos {
         nativeSetAudioSpeed(audioSpeed);
     }
 
-    public static void setAndroidFrameTiming(boolean enable) {
-        Log.d(TAG, "setAndroidFrameTiming " + enable);
-        nativeSetAndroidFrameTiming(enable);
+    public static float getAudioSpeed() {
+        return nativeGetAudioSpeed();
     }
 
     public static void enableAudioSpeed(boolean enable) {
@@ -309,17 +438,20 @@ public class LibAvos {
         nativeEnableAudioSpeed(enable);
     }
 
-    public static void disableAtempoFilter(boolean disable) {
-        if (DBG) Log.d(TAG, "disableAtempoFilter " + disable);
-        nativeDisableAtempoFilter(disable);
+    // backend: 0=atempo, 1=AudioTrack PlaybackParams, 2=Sonic
+    public static void setAudioSpeedBackend(int backend) {
+        if (DBG) Log.d(TAG, "setAudioSpeedBackend " + backend);
+        nativeSetAudioSpeedBackend(backend);
     }
 
     public static void setStreamMaxIframeSize(int size) {
+        size = StreamBufferSettings.frameSize(size);
         Log.d(TAG, "setStreamMaxIframeSize " + size);
         nativeSetStreamMaxIframeSize(size);
     }
 
     public static void setStreamBufferSize(int size) {
+        size = StreamBufferSettings.streamSize(size);
         Log.d(TAG, "setStreamBufferSize " + size);
         nativeSetStreamBufferSize(size);
     }
@@ -356,6 +488,8 @@ public class LibAvos {
 
     private static native void nativeSetAudioInterface(int audio_interface);
 
+    private static native void nativeSetAudioDecoder(int audioDecoder);
+
     private static native void nativeSetCodepage(int codepage);
 
     private static native void nativeSetOutputSampleRate(int sampleRate);
@@ -363,16 +497,20 @@ public class LibAvos {
     private static native void nativeSetPassthrough(int forcePassthrough);
 
     private static native void nativeSetHdmiSupportedAudioCodecs(long hdmiAudioCodecsFlag);
+    private static native void nativeSetMediaCodecAudioCapabilities(long mediaCodecAudioCapabilities);
+    private static native void nativeSetSpatializerCapabilities(int spatializerCapabilities);
+    private static native void nativeSetSpatializerEnabled(boolean enabled);
     private static native void nativeSetMaxPcmChannels(int maxChannels);
     private static native void nativeSetPcmChannelMasks(int[] channelMasks);
 
     private static native void nativeSetAudioSpeed(float audioSpeed);
+    private static native float nativeGetAudioSpeed();
 
     private static native void nativeSetAndroidFrameTiming(boolean enable);
 
     private static native void nativeEnableAudioSpeed(boolean enable);
 
-    private static native void nativeDisableAtempoFilter(boolean disable);
+    private static native void nativeSetAudioSpeedBackend(int backend);
 
     private static native void nativeParserSyncMode(int mode);
 
@@ -397,4 +535,8 @@ public class LibAvos {
     public static final int MP_AUDIO_INTERFACE_ANY = 0;
     public static final int MP_AUDIO_INTERFACE_AUDIOTRACK = 1;
     public static final int MP_AUDIO_INTERFACE_OPENSLES = 2;
+    // audio decoder preference
+    public static final int MP_AUDIO_DECODER_AUTO = 0;
+    public static final int MP_AUDIO_DECODER_FFMPEG = 1;
+    public static final int MP_AUDIO_DECODER_MEDIACODEC = 2;
 }

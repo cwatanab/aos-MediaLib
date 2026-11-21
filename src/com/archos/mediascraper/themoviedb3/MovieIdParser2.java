@@ -19,6 +19,7 @@ import android.util.Log;
 import android.util.Pair;
 
 import com.archos.medialib.R;
+import com.archos.mediascraper.GenreUtils;
 import com.archos.mediascraper.MovieTags;
 import com.archos.mediascraper.ScrapeStatus;
 import com.archos.mediascraper.ScraperImage;
@@ -33,6 +34,7 @@ import com.uwetrottmann.tmdb2.entities.Images;
 import com.uwetrottmann.tmdb2.entities.Movie;
 import com.uwetrottmann.tmdb2.entities.ReleaseDate;
 import com.uwetrottmann.tmdb2.entities.ReleaseDatesResult;
+import com.uwetrottmann.tmdb2.entities.SpokenLanguage;
 import com.uwetrottmann.tmdb2.entities.Videos;
 
 import org.slf4j.Logger;
@@ -43,6 +45,7 @@ import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -62,12 +65,28 @@ public class MovieIdParser2 {
 
     private static Context mContext;
 
-    public static MovieTags getResult(Movie movie, Context context) {
+    public static MovieTags getResult(Movie movie, Context context, String requestedLanguage) {
         mContext = context;
         MovieTags result = new MovieTags();
         if (movie.id != null) result.setOnlineId(movie.id);
+        result.setOriginalLanguage(movie.original_language);
+        result.setOriginalTitle(movie.original_title);
+        result.setTitleLanguage(TmdbTitleLanguage.forMovie(movie.title, requestedLanguage,
+                movie.original_title, movie.original_language, movie.translations));
+        if (movie.spoken_languages != null) {
+            List<String> spokenLanguages = new ArrayList<String>();
+            for (SpokenLanguage spokenLanguage : movie.spoken_languages) {
+                if (spokenLanguage != null) spokenLanguages.add(spokenLanguage.iso_639_1);
+            }
+            result.setSpokenLanguages(spokenLanguages);
+        }
         if (movie.genres != null) {
             List<String> localizedGenres = getLocalizedGenres(movie.genres);
+            List<Integer> genreIds = new ArrayList<>();
+            for (Genre genre : movie.genres) {
+                if (genre.id > 0) genreIds.add(genre.id);
+            }
+            result.setGenreIds(GenreUtils.formatGenreIds(genreIds));
             for (String genre : localizedGenres)
                 result.addGenreIfAbsent(genre);
         }
@@ -81,7 +100,7 @@ public class MovieIdParser2 {
             cal.setTime(movie.release_date);
             result.setYear(cal.get(Calendar.YEAR));
             // Format release_date as YYYY-MM-DD string
-            String dateStr = String.format("%04d-%02d-%02d",
+            String dateStr = String.format(Locale.ROOT, "%04d-%02d-%02d",
                     cal.get(Calendar.YEAR),
                     cal.get(Calendar.MONTH) + 1,
                     cal.get(Calendar.DAY_OF_MONTH));
@@ -93,6 +112,7 @@ public class MovieIdParser2 {
             result.setCollectionBackdropPath(movie.belongs_to_collection.backdrop_path);
             result.setCollectionPosterPath(movie.belongs_to_collection.poster_path);
             result.setCollectionName(movie.belongs_to_collection.name);
+            result.setCollectionDescription(movie.belongs_to_collection.overview);
             if (log.isDebugEnabled()) log.debug("getResult collection overview: {}", movie.belongs_to_collection.overview);
         } else
             result.setCollectionId(-1);

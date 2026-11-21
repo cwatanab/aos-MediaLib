@@ -51,13 +51,31 @@ public class AvosMediaPlayer implements IMediaPlayer {
     private IMediaPlayer.OnSeekCompleteListener mOnSeekCompleteListener = null;
     private IMediaPlayer.OnVideoSizeChangedListener mOnVideoSizeChangedListener = null;
     private IMediaPlayer.OnNextTrackListener mOnNextTrackListener = null;
-    private IMediaPlayer.OnSubtitleListener mOnSubtitleListener = null;
     private EventHandler mEventHandler;
     private PowerManager.WakeLock mWakeLock = null;
     private boolean mScreenOnWhilePlaying;
     private SurfaceHolder mSurfaceHolder;
     private boolean mStayAwake;
     private SmbProxy mSmbProxy = null;
+    private final Object mLifecycleLock = new Object();
+    private boolean mReleased;
+
+    private void ensureOpen() {
+        if (mReleased) throw new IllegalStateException("player released");
+    }
+
+    private void installProxy(SmbProxy proxy) {
+        SmbProxy previous;
+        synchronized (mLifecycleLock) {
+            if (mReleased) {
+                proxy.stop();
+                throw new IllegalStateException("player released");
+            }
+            previous = mSmbProxy;
+            mSmbProxy = proxy;
+        }
+        if (previous != null && previous != proxy) previous.stop();
+    }
 
     private native void create(Object weakReference);
 
@@ -90,15 +108,25 @@ public class AvosMediaPlayer implements IMediaPlayer {
     
     public void setDataSource(FileDescriptor fd, long offset, long length)
             throws IOException, IllegalArgumentException, IllegalStateException {
-        setDataSourceFD(fd, offset, length);
+        SmbProxy previous;
+        synchronized (mLifecycleLock) {
+            ensureOpen();
+            setDataSourceFD(fd, offset, length);
+            previous = mSmbProxy;
+            mSmbProxy = null;
+        }
+        if (previous != null) previous.stop();
     }
 
     public void setDataSource(Context context, Uri uri, Map<String, String> headers) throws IOException,
             IllegalArgumentException, SecurityException, IllegalStateException {
 
         String scheme = uri.getScheme();
+        if (ContentResolver.SCHEME_CONTENT.equals(scheme) && tryContentDescriptor(context, uri)) {
+            return;
+        }
         if (SmbProxy.needToStream(scheme)){
-            mSmbProxy = SmbProxy.setDataSource(uri, this, null);
+            installProxy(SmbProxy.setDataSource(uri, this, headers));
             return;
         }
 
@@ -141,6 +169,26 @@ public class AvosMediaPlayer implements IMediaPlayer {
     public void setDataSource(Context context, Uri uri) throws IOException,
             IllegalArgumentException, SecurityException, IllegalStateException {
         setDataSource(context, uri, null);
+    }
+
+    private boolean tryContentDescriptor(Context context, Uri uri) {
+        AssetFileDescriptor asset = null;
+        try {
+            asset = ContentFileDescriptor.open(context.getContentResolver(), uri);
+            if (asset == null) return false;
+            // Native code duplicates the descriptor and keeps offsets relative to this slice.
+            setDataSource(asset.getFileDescriptor(), asset.getStartOffset(),
+                    Math.max(0, asset.getDeclaredLength()));
+            return true;
+        } catch (IOException | SecurityException | IllegalArgumentException e) {
+            log.debug("Provider descriptor unavailable; using HTTP relay", e);
+            return false;
+        } finally {
+            if (asset != null) {
+                try { asset.close(); }
+                catch (IOException e) { log.debug("Unable to close provider descriptor", e); }
+            }
+        }
     }
 
     public void setDataSource(String path) throws IOException, IllegalArgumentException,
@@ -198,30 +246,39 @@ public class AvosMediaPlayer implements IMediaPlayer {
     private native void setVideoSurface(Surface surface);
 
     public void setDisplay(SurfaceHolder sh) {
-        mSurfaceHolder = sh;
-        Surface surface;
-        if (sh != null) {
-            surface = sh.getSurface();
-        } else {
-            surface = null;
+        synchronized (mLifecycleLock) {
+            ensureOpen();
+            Surface surface;
+            if (sh != null) {
+                surface = sh.getSurface();
+            } else {
+                surface = null;
+            }
+            setVideoSurface(surface);
+            mSurfaceHolder = sh;
+            updateSurfaceScreenOn();
         }
-        setVideoSurface(surface);
-        updateSurfaceScreenOn();
     }
 
     public void setSurface(Surface surface) {
-        if (mScreenOnWhilePlaying && surface != null) {
-            log.warn("setScreenOnWhilePlaying(true) is ineffective for Surface");
+        synchronized (mLifecycleLock) {
+            ensureOpen();
+            if (mScreenOnWhilePlaying && surface != null) {
+                log.warn("setScreenOnWhilePlaying(true) is ineffective for Surface");
+            }
+            setVideoSurface(surface);
+            mSurfaceHolder = null;
         }
-        mSurfaceHolder = null;
-        setVideoSurface(surface);
     }
 
     public void reset() {
-        stayAwake(false);
-        nativeReset();
-        // make sure none of the listeners get called anymore
-        mEventHandler.removeCallbacksAndMessages(null);
+        synchronized (mLifecycleLock) {
+            ensureOpen();
+            stayAwake(false);
+            nativeReset();
+            // make sure none of the listeners get called anymore
+            mEventHandler.removeCallbacksAndMessages(null);
+        }
     }
 
     private native void nativeReset();
@@ -309,28 +366,30 @@ public class AvosMediaPlayer implements IMediaPlayer {
         mOnNextTrackListener = listener;
     }
 
-    public void setOnSubtitleListener(OnSubtitleListener listener) {
-        mOnSubtitleListener = listener;
-    }
-
     private native void nativeRelease();
     public void release() {
-        stayAwake(false);
-        updateSurfaceScreenOn();
-        mOnPreparedListener = null;
-        mOnCompletionListener = null;
-        mOnInfoListener = null;
-        mOnErrorListener = null;
-        mOnBufferingUpdateListener = null;
-        mOnRelativePositionUpdateListener = null;
-        mOnSeekCompleteListener = null;
-        mOnVideoSizeChangedListener = null;
-        mOnNextTrackListener = null;
-        mOnSubtitleListener = null;
-        nativeRelease();
-        if (mSmbProxy != null) {
-            mSmbProxy.stop();
+        synchronized (mLifecycleLock) {
+            if (mReleased) return;
+            mReleased = true;
+            stayAwake(false);
+            updateSurfaceScreenOn();
+            mOnPreparedListener = null;
+            mOnCompletionListener = null;
+            mOnInfoListener = null;
+            mOnErrorListener = null;
+            mOnBufferingUpdateListener = null;
+            mOnRelativePositionUpdateListener = null;
+            mOnSeekCompleteListener = null;
+            mOnVideoSizeChangedListener = null;
+            mOnNextTrackListener = null;
+            SmbProxy proxy = mSmbProxy;
             mSmbProxy = null;
+            try {
+                if (proxy != null) proxy.stop();
+            } finally {
+                nativeRelease();
+                if (mEventHandler != null) mEventHandler.removeCallbacksAndMessages(null);
+            }
         }
     }
 
@@ -414,6 +473,8 @@ public class AvosMediaPlayer implements IMediaPlayer {
 
     public native boolean setAudioTrack(int stream);
 
+    public native void refreshAudioOutput();
+
     public native void setAudioFilter(int n, int night_on);
 
     public native void setAvDelay(int delay);
@@ -457,7 +518,6 @@ public class AvosMediaPlayer implements IMediaPlayer {
     private static final int MEDIA_SET_VIDEO_ASPECT = 8;
     private static final int MEDIA_ERROR = 100;
     private static final int MEDIA_INFO = 200;
-    private static final int MEDIA_SUBTITLE = 1000;
 
     private class EventHandler extends Handler
     {
@@ -520,8 +580,12 @@ public class AvosMediaPlayer implements IMediaPlayer {
 
             case MEDIA_SET_VIDEO_ASPECT:
                 if (log.isDebugEnabled()) log.debug("handleMessage: MEDIA_SET_VIDEO_ASPECT");
-                if (mOnVideoSizeChangedListener != null)
-                    mOnVideoSizeChangedListener.onVideoAspectChanged(mMediaPlayer, (double)msg.arg1 / (double) msg.arg2);
+                if (mOnVideoSizeChangedListener != null) {
+                    double aspect = videoAspectFromRatio(msg.arg1, msg.arg2);
+                    if (msg.arg1 <= 0 || msg.arg2 <= 0)
+                        log.warn("Invalid video sample aspect ratio {}/{}, using 1:1", msg.arg1, msg.arg2);
+                    mOnVideoSizeChangedListener.onVideoAspectChanged(mMediaPlayer, aspect);
+                }
                 return;
 
             case MEDIA_ERROR:
@@ -552,23 +616,6 @@ public class AvosMediaPlayer implements IMediaPlayer {
                 }
                 // No real default action so far.
                 return;
-            case MEDIA_SUBTITLE:
-                if (log.isDebugEnabled()) log.debug("handleMessage: MEDIA_SUBTITLE");
-                if (mOnSubtitleListener != null) {
-                    if (msg.obj == null) {
-                        log.error("MEDIA_SUBTITLE with null object");
-                        return;
-                    }
-                    if (msg.obj instanceof Subtitle) {
-                        if (log.isDebugEnabled()) log.debug("handleMessage: MEDIA_SUBTITLE msg is a Subtitle call onSubtitle");
-                        mOnSubtitleListener.onSubtitle(mMediaPlayer, (Subtitle) msg.obj);
-                    }
-                    else
-                        log.error("MEDIA_SUBTITLE with wrong object");
-                } else {
-                    if (log.isDebugEnabled()) log.debug("handleMessage: MEDIA_SUBTITLE, no onSubtitleListener, not calling onSubtitle");
-                }
-                return;
             case MEDIA_NOP: // interface test message - ignore
                 if (log.isDebugEnabled()) log.debug("handleMessage: MEDIA_NOP");
                 break;
@@ -578,5 +625,12 @@ public class AvosMediaPlayer implements IMediaPlayer {
                 return;
             }
         }
+    }
+
+    static double videoAspectFromRatio(int numerator, int denominator) {
+        if (numerator <= 0 || denominator <= 0)
+            return 1.0;
+        double aspect = (double) numerator / (double) denominator;
+        return Double.isFinite(aspect) && aspect > 0.0 ? aspect : 1.0;
     }
 }

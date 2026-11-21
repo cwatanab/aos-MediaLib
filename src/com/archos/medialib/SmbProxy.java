@@ -34,9 +34,15 @@ public class SmbProxy extends Proxy{
 
     private static final Logger log = LoggerFactory.getLogger(SmbProxy.class);
     private StreamOverHttp mStream;
+    private final StreamOverHttp.ReadMode mReadMode;
 
     protected SmbProxy(Uri uri) {
+        this(uri, StreamOverHttp.ReadMode.DEFAULT);
+    }
+
+    private SmbProxy(Uri uri, StreamOverHttp.ReadMode readMode) {
         super(uri);
+        mReadMode = readMode;
     }
     public static boolean needToStream(String scheme){
             return "smb".equalsIgnoreCase(scheme) ||
@@ -64,10 +70,10 @@ public class SmbProxy extends Proxy{
                 if (log.isTraceEnabled()) log.trace("start: error getting metafile for url {}", mUri, e);
             }
             if(file != null) {
-                mStream = new StreamOverHttp(file, mimeType);
+                mStream = new StreamOverHttp(file, mimeType, mReadMode);
             } else {
                 // sftp at least requires encodedUri
-                mStream = new StreamOverHttp(encodedUri, mimeType);
+                mStream = new StreamOverHttp(encodedUri, mimeType, mReadMode);
             }
         } catch (IOException e) {
             return null;
@@ -84,27 +90,31 @@ public class SmbProxy extends Proxy{
     }
     
     public static SmbProxy setDataSource(Uri uri, IMediaPlayer mp, Map<String, String> headers) throws IOException {
-        SmbProxy smbProxy = new SmbProxy(uri);
-        Uri newUri = smbProxy.start();
-        if (newUri != null) {
-            if(headers!=null)
-                mp.setDataSource2(newUri.toString(), headers);
-            else
-                mp.setDataSource(newUri.toString());
-            return smbProxy;
-        } else {
-            throw new IOException();
+        SmbProxy proxy = new SmbProxy(uri, StreamOverHttp.ReadMode.PLAYBACK);
+        boolean installed = false;
+        try {
+            Uri local = proxy.start();
+            if (local == null) throw new IOException("Unable to open proxy");
+            if (headers != null) mp.setDataSource2(local.toString(), headers);
+            else mp.setDataSource(local.toString());
+            installed = true;
+            return proxy;
+        } finally {
+            if (!installed) proxy.stop();
         }
     }
-    
+
     public static SmbProxy setDataSource(Uri uri, IMediaMetadataRetriever mr, Map<String, String> headers) throws IllegalArgumentException {
-        SmbProxy smbProxy = new SmbProxy(uri);
-        Uri newUri = smbProxy.start();
-        if (newUri != null) {
-            mr.setDataSource(newUri.toString(), headers);
-            return smbProxy;
-        } else {
-            throw new IllegalArgumentException();
+        SmbProxy proxy = new SmbProxy(uri);
+        boolean installed = false;
+        try {
+            Uri local = proxy.start();
+            if (local == null) throw new IllegalArgumentException("Unable to open proxy");
+            mr.setDataSource(local.toString(), headers);
+            installed = true;
+            return proxy;
+        } finally {
+            if (!installed) proxy.stop();
         }
     }
 

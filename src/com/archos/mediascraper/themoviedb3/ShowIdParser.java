@@ -17,6 +17,7 @@ package com.archos.mediascraper.themoviedb3;
 import android.content.Context;
 
 import com.archos.medialib.R;
+import com.archos.mediascraper.GenreUtils;
 import com.archos.mediascraper.ScraperImage;
 import com.archos.mediascraper.ShowTags;
 import com.uwetrottmann.tmdb2.entities.CastMember;
@@ -24,6 +25,7 @@ import com.uwetrottmann.tmdb2.entities.ContentRating;
 import com.uwetrottmann.tmdb2.entities.CrewMember;
 import com.uwetrottmann.tmdb2.entities.Genre;
 import com.uwetrottmann.tmdb2.entities.Network;
+import com.uwetrottmann.tmdb2.entities.SpokenLanguage;
 import com.uwetrottmann.tmdb2.entities.TvShow;
 
 import org.slf4j.Logger;
@@ -39,7 +41,7 @@ public class ShowIdParser {
 
     private static Context mContext;
 
-    public static ShowTags getResult(TvShow serie, String year, Context context) {
+    public static ShowTags getResult(TvShow serie, String year, Context context, String requestedLanguage) {
         mContext = context;
         ShowTags result = new ShowTags();
 
@@ -52,6 +54,27 @@ public class ShowIdParser {
 
         result.setRating(Math.round(serie.vote_average.floatValue() * 10)/10.0f);
         result.setTitle(serie.name + (( year != null) ? " " + year : ""));
+        if (log.isDebugEnabled()) {
+            log.debug("getResult: TMDb show id={} name={} original_language={} original_name={} spoken_languages={}",
+                    serie.id, serie.name, serie.original_language, serie.original_name,
+                    serie.spoken_languages);
+        }
+        result.setOriginalLanguage(serie.original_language);
+        result.setOriginalTitle(serie.original_name);
+        result.setTitleLanguage(TmdbTitleLanguage.forShow(serie.name, requestedLanguage,
+                serie.original_name, serie.original_language, serie.translations));
+        if (serie.spoken_languages != null) {
+            List<String> spokenLanguages = new ArrayList<String>();
+            for (SpokenLanguage spokenLanguage : serie.spoken_languages) {
+                if (spokenLanguage != null) spokenLanguages.add(spokenLanguage.iso_639_1);
+            }
+            result.setSpokenLanguages(spokenLanguages);
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("getResult: normalized show metadata id={} original_language={} original_title={} spoken_languages={}",
+                    serie.id, result.getOriginalLanguage(), result.getOriginalTitle(),
+                    result.getSpokenLanguages());
+        }
 
         if (log.isDebugEnabled()) log.debug("getResult: found title={}", serie.name);
 
@@ -64,6 +87,13 @@ public class ShowIdParser {
         result.setOnlineId(serie.id);
         if (log.isDebugEnabled()) log.debug("getResult: onlineId={}, imdbId={}", serie.id, serie.external_ids.imdb_id);
         result.setGenres(getLocalizedGenres(serie.genres));
+        if (serie.genres != null) {
+            List<Integer> genreIds = new ArrayList<>();
+            for (Genre genre : serie.genres) {
+                if (genre.id > 0) genreIds.add(genre.id);
+            }
+            result.setGenreIds(GenreUtils.formatGenreIds(genreIds));
+        }
 
         for (Network network : serie.networks)
             result.addStudioIfAbsent(network.name, '|', ',');

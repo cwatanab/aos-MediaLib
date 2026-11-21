@@ -46,6 +46,20 @@ public class Scraper {
     public static final String ITEM_REQUEST_ALL_EPISODES = "WantAllEps";
     public static final String ITEM_RESULT_ALL_EPISODES = "allEpisodes";
 
+    /**
+     * For an explicit user-initiated re-scrape, refresh source metadata instead of reusing
+     * local or HTTP-cached scraper results.
+     */
+    public static final String ITEM_REQUEST_REFRESH_SHOW_METADATA = "RefreshShowMetadata";
+
+    /**
+     * Explicit "update whole show" request (manual full-show rescrape UI only): together with
+     * {@link #ITEM_REQUEST_ALL_EPISODES}, makes the TV scraper fetch every season the show has
+     * instead of only the single season inferred from the search query. Must not be set for
+     * per-episode/per-season auto-scrape requests, since it costs one TMDb request per season.
+     */
+    public static final String ITEM_REQUEST_ALL_SEASONS = "WantAllSeasons";
+
     public static final String ITEM_REQUEST_BASIC_SHOW = "basicShow";
     public static final String ITEM_REQUEST_BASIC_VIDEO = "basicVideo";
 
@@ -65,6 +79,10 @@ public class Scraper {
 
     private ScrapeSearchResult getMatches(SearchInfo info, int maxItems) {
         info = SearchPreprocessor.instance().reParseInfo(info);
+        if (info.skipScraping) {
+            if (log.isDebugEnabled()) log.debug("getMatches: skipScraping set for {}, not querying", info.getFile());
+            return new ScrapeSearchResult(null, !info.isTvShow(), ScrapeStatus.NOT_FOUND, null);
+        }
         if (info.isTvShow())
             return mShowScraper.getMatches2(info, maxItems);
         return mMovieScraper.getMatches2(info, maxItems);
@@ -113,8 +131,13 @@ public class Scraper {
         info.aggressiveScan = aggressiveScan;
         info.scrapeFromDB = scrapeFromDB;
 
+        if (info.skipScraping) {
+            if (log.isDebugEnabled()) log.debug("getAutoDetails: skipScraping set for {}, not querying", info.getFile());
+            return new ScrapeDetailResult(null, !info.isTvShow(), null, ScrapeStatus.NOT_FOUND, null);
+        }
+
         if (info.isTvShow())
-            return mShowScraper.search(info);
+            return mShowScraper.searchWithTitleCollisionFallback(info);
         return mMovieScraper.search(info);
     }
 

@@ -31,6 +31,8 @@ import org.jupnp.support.contentdirectory.callback.Browse;
 import org.jupnp.support.model.BrowseFlag;
 import org.jupnp.support.model.DIDLContent;
 import org.jupnp.support.model.DIDLObject;
+import org.jupnp.support.model.ProtocolInfo;
+import org.jupnp.support.model.Res;
 import org.jupnp.support.model.container.Container;
 import org.jupnp.support.model.item.Item;
 
@@ -100,10 +102,7 @@ public class UpnpListingEngine extends ListingEngine {
             });
             return;
         }
-        String decodedContainerId = null;
-        try {
-            decodedContainerId = URLDecoder.decode(containerId, "UTF-8");
-        } catch (UnsupportedEncodingException e) {/* does not happen, UTF-8 always available... */}
+        String decodedContainerId = containerId != null ? Uri.decode(containerId) : null;
 
         UpnpServiceManager.startServiceIfNeeded(mContext).execute(new Browse(service, decodedContainerId, BrowseFlag.DIRECT_CHILDREN) {
             @Override
@@ -140,8 +139,15 @@ public class UpnpListingEngine extends ListingEngine {
                 // All files matching the filter
                 for (Item item : content.getItems()){
                     boolean match = true;
-                    String mimeType = item.getFirstResource().getProtocolInfo().getContentFormatMimeType().toString();
-                    String path = item.getFirstResource().getValue();
+                    Res res = item.getFirstResource();
+                    if (res == null) {
+                        Log.w(TAG, "received: item has no resource, skipping: " + item.getTitle());
+                        continue;
+                    }
+                    ProtocolInfo protocolInfo = res.getProtocolInfo();
+                    String mimeType = (protocolInfo != null && protocolInfo.getContentFormatMimeType() != null)
+                            ? protocolInfo.getContentFormatMimeType().toString() : null;
+                    String path = res.getValue();
                     String extension = null;
                     if (path != null && path.lastIndexOf('.') != -1) {
                         extension = path.substring(path.lastIndexOf('.') + 1);
@@ -160,12 +166,8 @@ public class UpnpListingEngine extends ListingEngine {
 
                     if (mMimeTypeFilter != null && mMimeTypeFilter.length > 0) {
                         // If we don't have the mimeType, we must guess it from the file extension
-                        if (mimeType == null) {
-                            item.getFirstResource().getValue();
-                            if (extension != null) {
-                                extension = path.substring(path.lastIndexOf('.') + 1);
-                                mimeType = MimeUtils.guessMimeTypeFromExtension(MimeUtils.getExtension(path));
-                            }
+                        if (mimeType == null && extension != null) {
+                            mimeType = MimeUtils.guessMimeTypeFromExtension(MimeUtils.getExtension(path));
                         }
 
                         if (mimeType != null) {

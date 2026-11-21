@@ -690,15 +690,15 @@ public final class VideoStore {
 
         public static class ListObj {
             public String title;
-            public int traktId;
+            public long traktId;
             public int syncStatus = SyncStatus.STATUS_NOT_SYNC;
             public int id;
 
-            public ListObj(String title, int traktId, int syncStatus){
+            public ListObj(String title, long traktId, int syncStatus){
                 this(-1, title, traktId, syncStatus);
             }
 
-            public ListObj(int id, String title, int traktId, int syncStatus){
+            public ListObj(int id, String title, long traktId, int syncStatus){
                 this.id = id;
                 this.title = title;
                 this.traktId = traktId;
@@ -1146,6 +1146,31 @@ public final class VideoStore {
              */
             public static final String SCRAPER_TITLE = "scraper_name";
             /**
+             * MediaScraper: Original language of the movie or show.
+             * <P>TYPE: <code>String</code>, ISO 639-1 code or <code>und</code> if unknown<P>
+             */
+            public static final String SCRAPER_ORIGINAL_LANGUAGE = "scraper_original_language";
+            /**
+             * MediaScraper: Language of the localized title currently displayed for the movie or show.
+             * <P>TYPE: <code>String</code>, ISO 639-1 code or <code>und</code> if unknown<P>
+             */
+            public static final String SCRAPER_TITLE_LANGUAGE = "scraper_title_language";
+            /**
+             * MediaScraper: Movie or Show sort title ("Title, Article")
+             * <P>TYPE: <code>String</code> or <code>null</code> if not scraped
+             */
+            public static final String SCRAPER_SORT_NAME = "sort_name";
+            /**
+             * MediaScraper: Movie sort title ("Title, Article")
+             * <P>TYPE: <code>String</code> or <code>null</code> if not a movie
+             */
+            public static final String SCRAPER_M_SORT_NAME = "m_sort_name";
+            /**
+             * MediaScraper: Show sort title ("Title, Article")
+             * <P>TYPE: <code>String</code> or <code>null</code> if not a show / episode
+             */
+            public static final String SCRAPER_S_SORT_NAME = "s_sort_name";
+            /**
              * MediaScraper: Movie title
              * <P>TYPE: <code>String</code> or <code>null</code> if not a movie
              */
@@ -1307,6 +1332,18 @@ public final class VideoStore {
              * <P>FORMAT: "Action, Commedy, ..."
              */
             public static final String SCRAPER_S_GENRES = "s_genres";
+            /**
+             * MediaScraper: Movie Genres as language-independent TMDB genre ids
+             * <P>TYPE: <code>String</code> or <code>null</code> if not a movie / not scraped
+             * <P>FORMAT: ",16,10751," (delimiter wrapped so that LIKE '%,16,%' is unambiguous)
+             */
+            public static final String SCRAPER_M_GENRE_IDS = "m_genre_ids";
+            /**
+             * MediaScraper: Show Genres as language-independent TMDB genre ids
+             * <P>TYPE: <code>String</code> or <code>null</code> if not a show / episode / not scraped
+             * <P>FORMAT: ",16,10751," (delimiter wrapped so that LIKE '%,16,%' is unambiguous)
+             */
+            public static final String SCRAPER_S_GENRE_IDS = "s_genre_ids";
             /**
              * MediaScraper: Movie Studios / Show Tv Stations
              * <P>TYPE: <code>String</code> or <code>null</code> if not scraped
@@ -1589,6 +1626,11 @@ public final class VideoStore {
              * <P>TYPE: <code>String</code> or <code>null</code>
              */
             public static final String SCRAPER_C_NAME = "m_coll_name";
+            /**
+             * MediaScraper: Movie Collection sort name
+             * <P>TYPE: <code>String</code> or <code>null</code>
+             */
+            public static final String SCRAPER_C_SORT_NAME = "m_coll_sort_name";
             /**
              * MediaScraper: Movie Collection description
              * <P>TYPE: <code>String</code> or <code>null</code>

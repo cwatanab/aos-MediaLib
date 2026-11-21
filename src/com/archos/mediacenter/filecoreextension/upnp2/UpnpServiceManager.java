@@ -37,9 +37,7 @@ import org.jupnp.model.types.UDADeviceType;
 import org.jupnp.model.types.UDAServiceId;
 import org.jupnp.registry.DefaultRegistryListener;
 import org.jupnp.registry.Registry;
-import org.jupnp.registry.RegistryListener;
 import org.jupnp.android.AndroidUpnpService;
-import org.jupnp.android.AndroidUpnpServiceImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -144,29 +142,10 @@ public class UpnpServiceManager {
                     public void propertyChange(PropertyChangeEvent evt) {
                         if (evt.getOldValue() != evt.getNewValue()) {
                             if (log.isDebugEnabled()) log.debug("NetworkState for {} changed:{} -> {}", evt.getPropertyName(), evt.getOldValue(), evt.getNewValue());
-                            //we need to restart upnp service on network state change
-                            if (mAndroidUpnpService!=null&&mState==State.RUNNING&&mHasStarted) {
-                                if (log.isDebugEnabled()) log.debug("restarting");
-                                mDevices.clear();
-                                informListenersOfDeviceListUpdate(mListeners);
-                                mAndroidUpnpService.getRegistry().removeListener(mRegistryListener);
-                                // Release multicast lock before unbinding
-                                if (mMulticastLock != null && mMulticastLock.isHeld()) {
-                                    mMulticastLock.release();
-                                    if (log.isDebugEnabled()) log.debug("MulticastLock released before restart");
-                                }
-                                try {
-                                    // Only unbind if service was actually connected to prevent crashes in AndroidUpnpServiceImpl
-                                    if (mServiceConnected) {
-                                        mContext.unbindService(mServiceConnection);
-                                        mServiceConnected = false;
-                                    }
-                                } catch (java.lang.IllegalArgumentException e) {
-                                    //this is bad, but I haven't found any other way to avoid "java.lang.IllegalArgumentException: Service not registered"
-                                }
-                                mState = State.NOT_RUNNING;
-                                start();
-                            }
+                            // Network callbacks run on a HandlerThread while service connection callbacks run
+                            // on the main thread. Serialize the restart with the service lifecycle so the
+                            // binder cannot be cleared between checking and using it.
+                            mUiHandler.post(UpnpServiceManager.this::restartAfterNetworkChange);
                         }
                     }
                 };
@@ -175,6 +154,37 @@ public class UpnpServiceManager {
             mState = State.NOT_RUNNING;
             if (log.isDebugEnabled()) log.debug("State NOT_RUNNING");
         }
+    }
+
+    private void restartAfterNetworkChange() {
+        AndroidUpnpService upnpService = mAndroidUpnpService;
+        if (upnpService == null || mState != State.RUNNING || !mHasStarted) {
+            return;
+        }
+
+        if (log.isDebugEnabled()) log.debug("restarting");
+        mDevices.clear();
+        informListenersOfDeviceListUpdate(mListeners);
+        Registry registry = upnpService.getRegistry();
+        if (registry != null) {
+            registry.removeListener(mRegistryListener);
+        }
+        // Release multicast lock before unbinding
+        if (mMulticastLock != null && mMulticastLock.isHeld()) {
+            mMulticastLock.release();
+            if (log.isDebugEnabled()) log.debug("MulticastLock released before restart");
+        }
+        try {
+            // Only unbind if service was actually connected to prevent crashes in AndroidUpnpServiceImpl
+            if (mServiceConnected) {
+                mContext.unbindService(mServiceConnection);
+                mServiceConnected = false;
+            }
+        } catch (java.lang.IllegalArgumentException e) {
+            //this is bad, but I haven't found any other way to avoid "java.lang.IllegalArgumentException: Service not registered"
+        }
+        mState = State.NOT_RUNNING;
+        start();
     }
 
     /**
@@ -215,7 +225,7 @@ public class UpnpServiceManager {
      */
     public void start() {
         if (mState == State.NOT_RUNNING || mState == State.ERROR) {
-            boolean result = mContext.bindService(new Intent(mContext, AndroidUpnpServiceImpl.class), mServiceConnection, Context.BIND_AUTO_CREATE);
+            boolean result = mContext.bindService(new Intent(mContext, NovaUpnpService.class), mServiceConnection, Context.BIND_AUTO_CREATE);
             if (result) {
                 mState = State.STARTING;
                 if (log.isDebugEnabled()) log.debug("State STARTING");
@@ -307,15 +317,34 @@ public class UpnpServiceManager {
 
             // Listen for discovery stuff
             if (mAndroidUpnpService != null) {
-                mAndroidUpnpService.get().startup(); // need to start UpnpService (was not the case with cling)
-                mAndroidUpnpService.getRegistry().addListener(mRegistryListener);
+                try {
+                    mAndroidUpnpService.get().startup(); // need to start UpnpService (was not the case with cling)
+                    mAndroidUpnpService.getRegistry().addListener(mRegistryListener);
+                    synchronized (UpnpServiceManager.this) {
+                        // Devices discovered before listener attachment have no add callback for us.
+                        boolean added = false;
+                        for (Device device : mAndroidUpnpService.getRegistry().getDevices()) {
+                            if (mRegistryListener.addDeviceLocked(device)) {
+                                added = true;
+                            }
+                        }
+                        if (added) {
+                            informListenersOfDeviceListUpdate(mListeners);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.error("onServiceConnected: failed to start UPnP service", e);
+                    mState = State.ERROR;
+                }
             } else {
                 log.error("onServiceConnected: mAndroidUpnpService is null!");
             }
 
             // Start searching for servers periodically
             mUiHandler.removeCallbacks(mPeriodicSearchRunnable); // better safe than sorry
-            mUiHandler.post(mPeriodicSearchRunnable); // probably does not have to be on UI thread but it makes no harm and avoid having yet another handler
+            if (mState == State.RUNNING) {
+                mUiHandler.post(mPeriodicSearchRunnable); // probably does not have to be on UI thread but it makes no harm and avoid having yet another handler
+            }
         }
 
         public void onServiceDisconnected(ComponentName className) {
@@ -403,7 +432,9 @@ public class UpnpServiceManager {
     /**
      * The listener to the Cling service
      */
-    final RegistryListener mRegistryListener = new DefaultRegistryListener() {
+    final DeviceRegistryListener mRegistryListener = new DeviceRegistryListener();
+
+    final class DeviceRegistryListener extends DefaultRegistryListener {
 
         @Override
         public void remoteDeviceAdded(Registry registry, RemoteDevice device)  { deviceAdded(device); }
@@ -415,41 +446,46 @@ public class UpnpServiceManager {
         public void localDeviceRemoved(Registry registry, LocalDevice device)  {  deviceRemoved(device); }
 
         private void deviceAdded(final Device device) {
+            synchronized (UpnpServiceManager.this) {
+                if (addDeviceLocked(device)) {
+                    informListenersOfDeviceListUpdate(mListeners);
+                }
+            }
+        }
+
+        private boolean addDeviceLocked(final Device device) {
             // Do not list devices with no mane, or with no content service
             String deviceName = device.getDisplayString();
-            if (deviceName == null) return;
+            if (deviceName == null) return false;
             Service service = device.findService(new UDAServiceId("ContentDirectory"));
-            if (service == null) return;
+            if (service == null) return false;
             Action action = service.getAction("Browse");
-            if (action == null) return;
+            if (action == null) return false;
 
             if (log.isDebugEnabled()) log.debug("deviceAdded: {} {} {} {}", device.getDisplayString(), device.getDetails().getFriendlyName(),
                     device.getDetails().getSerialNumber(), device.getDetails().getManufacturerDetails().getManufacturer());
             if (log.isDebugEnabled()) log.debug("deviceAdded: addDevice with hash code {}", device.hashCode());
-            synchronized (this) {
-                // Add to list
-                mDevices.put(Integer.valueOf(device.hashCode()), device);
-                // Each time a new device is found, we check if there is an on-going blocking request for this device
-                Iterator<BlockingDeviceRequest> iterator = mDeviceRequests.iterator();
-                while (iterator.hasNext()) {
-                    boolean found = iterator.next().checkIfDeviceIsFound(mDevices);
-                    if (found) {
-                        iterator.remove();
-                    }
+            // Add to list
+            mDevices.put(Integer.valueOf(device.hashCode()), device);
+            // Each time a new device is found, we check if there is an on-going blocking request for this device
+            Iterator<BlockingDeviceRequest> iterator = mDeviceRequests.iterator();
+            while (iterator.hasNext()) {
+                boolean found = iterator.next().checkIfDeviceIsFound(mDevices);
+                if (found) {
+                    iterator.remove();
                 }
             }
-            informListenersOfDeviceListUpdate(mListeners);
-
+            return true;
         }
 
         private void deviceRemoved(Device device) {
-            synchronized (this) {
-                mDevices.remove(device);
+            synchronized (UpnpServiceManager.this) {
+                mDevices.remove(Integer.valueOf(device.hashCode()));
+                informListenersOfDeviceListUpdate(mListeners);
             }
-            informListenersOfDeviceListUpdate(mListeners);
 
         }
-    };
+    }
 
     private void informListenersOfDeviceListUpdate(final List<Listener> listeners) {
         // Make a copy of the list to avoid concurrency issues
@@ -476,23 +512,33 @@ public class UpnpServiceManager {
      * @return
      */
     protected int execute(ActionCallback callback) {
-        if (mState!=State.RUNNING) {
+        if (mState != State.RUNNING || mAndroidUpnpService == null) {
             return -1;
         }
-
-        mAndroidUpnpService.getControlPoint().execute(callback);
-        return 0;
+        try {
+            mAndroidUpnpService.getControlPoint().execute(callback);
+            return 0;
+        } catch (Exception e) {
+            log.error("execute: failed", e);
+            return -1;
+        }
     }
 
-    private Runnable  mPeriodicSearchRunnable = new Runnable() {
+    private Runnable mPeriodicSearchRunnable = new Runnable() {
         @Override
         public void run() {
-            if (mAndroidUpnpService!=null) {
+            if (mAndroidUpnpService != null && mState == State.RUNNING) {
                 if (log.isDebugEnabled()) log.debug("mPeriodicSearchRunnable search");
-                mAndroidUpnpService.getControlPoint().search(new UDADeviceTypeHeader(new UDADeviceType("MediaServer")));
+                try {
+                    mAndroidUpnpService.getControlPoint().search(new UDADeviceTypeHeader(new UDADeviceType("MediaServer")));
+                } catch (Exception e) {
+                    log.error("mPeriodicSearchRunnable search failed", e);
+                }
             }
             // program next search
-            mUiHandler.postDelayed(mPeriodicSearchRunnable, SERVER_SEARCH_PERIOD_MS); // probably does not have to be on UI thread but it makes no harm and avoid having yet another handler
+            if (mState == State.RUNNING) {
+                mUiHandler.postDelayed(mPeriodicSearchRunnable, SERVER_SEARCH_PERIOD_MS); // probably does not have to be on UI thread but it makes no harm and avoid having yet another handler
+            }
         }
     };
     public String getDeviceFriendlyName(String key){
