@@ -79,7 +79,8 @@ public class RemoteStateService extends Service implements UpnpServiceManager.Li
                     MediaColumns.DATA + " LIKE 'sftp://%' OR " +
                     MediaColumns.DATA + " LIKE 'sshj://%' OR " +
                     MediaColumns.DATA + " LIKE 'webdav://%' OR " +
-                    MediaColumns.DATA + " LIKE 'webdavs://%'";
+                    MediaColumns.DATA + " LIKE 'webdavs://%' OR " +
+                    MediaColumns.DATA + " LIKE 'pcloud://%'";
     private static final String SELECTION_ALL_NETWORK = SELECTION_LOCAL_REMOTE+" OR "+SELECTION_DISTANT_REMOTE;
     public static final String ACTION_CHECK_SMB = "archos.intent.action.CHECK_SMB";
     private ConcurrentHashMap<String, Pair<Long, Integer>> mUpnpId; //store name, id and active state
@@ -172,7 +173,7 @@ public class RemoteStateService extends Service implements UpnpServiceManager.Li
                     final String server = c.getString(COLUMN_DATA);
                     final int active = c.getInt(COLUMN_ACTIVE);
                     if (log.isDebugEnabled()) log.debug("handleDb: server: {} active: {}", server, active);
-                    if(server.startsWith("sftp")||server.startsWith("ftp")||server.startsWith("webdav")||server.startsWith("sshj")) { //for distant folders, we don't check existence (for now)
+                    if(server.startsWith("sftp")||server.startsWith("ftp")||server.startsWith("webdav")||server.startsWith("sshj")||server.startsWith("pcloud")) { //for distant folders, we don't check existence (for now)
                         if (log.isDebugEnabled()) log.debug("handleDb: ftp server is assumed to exist: {}", server);
                         if (updateServerDb(id, cr, active, 1, now))
                             mServerDbUpdated = true;

@@ -46,6 +46,7 @@ public class SmbProxy extends Proxy{
                     "sshj".equalsIgnoreCase(scheme) ||
                     "webdav".equalsIgnoreCase(scheme) ||
                     "webdavs".equalsIgnoreCase(scheme) ||
+                    "pcloud".equalsIgnoreCase(scheme) ||
                     "smbj".equalsIgnoreCase(scheme) ||
                     UriUtils.isContentUri(Uri.parse(scheme+"://test"));
     }

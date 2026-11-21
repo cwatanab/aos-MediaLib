@@ -40,7 +40,7 @@ public class UriUtils {
 
     private static final Logger log = LoggerFactory.getLogger(UriUtils.class);
 
-    public final static List<String> networkSharesTypes = List.of("ftp", "sftp", "ftps", "sshj", "smb", "smbj", "webdav", "webdavs", "upnp");
+    public final static List<String> networkSharesTypes = List.of("ftp", "sftp", "ftps", "sshj", "smb", "smbj", "webdav", "webdavs", "upnp", "pcloud");
     private final static int maxUriType = networkSharesTypes.size();
 
     /*
