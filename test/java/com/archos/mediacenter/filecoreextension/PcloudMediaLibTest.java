@@ -36,4 +36,32 @@ public class PcloudMediaLibTest {
         assertTrue(SmbProxy.needToStream("pcloud"));
         assertTrue(SmbProxy.needToStream("PCLOUD"));
     }
+
+    @Test
+    public void testSmbProxy_pcloudSpecialChars_doesNotDoubleEncodeOrTruncateUri() throws Exception {
+        Uri pcloudUri = new Uri.Builder()
+                .scheme("pcloud")
+                .authority("api.pcloud.com")
+                .appendPath("日本語 フォルダ")
+                .appendPath("movie #1 100% ?test.mkv")
+                .build();
+        SmbProxy[] holder = new SmbProxy[1];
+        Uri streamUri = new SmbProxy(pcloudUri) {
+            Uri callStart() {
+                holder[0] = this;
+                return start();
+            }
+        }.callStart();
+        try {
+            assertTrue("Stream URI must start with http://localhost:", streamUri != null && streamUri.toString().startsWith("http://localhost:"));
+            assertTrue("Stream URI must not contain raw fragment #", streamUri.getFragment() == null);
+            assertTrue("Stream URI must not contain raw query ?", streamUri.getQuery() == null);
+            assertFalse("Stream URI must not double-encode spaces (%2520)", streamUri.toString().contains("%2520"));
+            assertFalse("Stream URI must not double-encode # (%2523)", streamUri.toString().contains("%2523"));
+        } finally {
+            if (holder[0] != null) {
+                holder[0].stop();
+            }
+        }
+    }
 }

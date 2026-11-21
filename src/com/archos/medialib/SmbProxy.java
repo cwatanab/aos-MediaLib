@@ -52,7 +52,8 @@ public class SmbProxy extends Proxy{
     }
     protected Uri start() {
         stop();
-        Uri encodedUri = encodeUri(mUri);
+        boolean isPcloud = "pcloud".equalsIgnoreCase(mUri.getScheme());
+        Uri encodedUri = isPcloud ? mUri : encodeUri(mUri);
         String mimeType = MimeUtils.guessMimeTypeFromExtension(encodedUri.getLastPathSegment());
         MetaFile2 file = null;
         try {
@@ -71,7 +72,8 @@ public class SmbProxy extends Proxy{
         } catch (IOException e) {
             return null;
         }
-        return mStream.getUri(file != null ? file.getName():encodedUri.getLastPathSegment());
+        String displayName = file != null ? file.getName() : encodedUri.getLastPathSegment();
+        return isPcloud ? mStream.getEncodedUri(displayName) : mStream.getUri(displayName);
     }
     
     public void stop() {
