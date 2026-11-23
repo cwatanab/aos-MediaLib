@@ -19,7 +19,9 @@ import android.graphics.Bitmap.Config;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorSpace;
 import android.graphics.Matrix;
+import android.os.Build;
 import android.util.Log;
 
 
@@ -57,7 +59,7 @@ public class BitmapUtils {
         if (DBG) Log.d(TAG, "resized thumbnail size=" + resizedWidth + "x" + resizedHeight);
 
         // Create the destination bitmap and fill it with black
-        thumb = Bitmap.createBitmap(displayWidth, displayHeight, Config.RGB_565);
+        thumb = Bitmap.createBitmap(displayWidth, displayHeight, Config.ARGB_8888);
         thumb.eraseColor(Color.BLACK);
 
         // Compute the offset of the resized thumbnail so that it is centered inside the destination bitmap
@@ -153,6 +155,10 @@ public class BitmapUtils {
     public static Bitmap decodeSampledBitmapFromFile(String filePath, int reqWidth, int reqHeight) {
         if (filePath == null) return null;
         final BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inPreferredConfig = Config.ARGB_8888;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            options.inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
+        }
         if (reqWidth > 0 && reqHeight > 0) {
             options.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(filePath, options);

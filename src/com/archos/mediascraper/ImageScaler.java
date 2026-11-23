@@ -20,8 +20,10 @@ import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
 import android.graphics.BitmapFactory;
 import android.graphics.BitmapFactory.Options;
+import android.graphics.ColorSpace;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Log;
 
 import com.archos.filecorelibrary.FileEditor;
@@ -105,6 +107,10 @@ public class ImageScaler {
         // the usual path, decode bounds and check size
         Options opts = new Options();
         opts.inJustDecodeBounds = true;
+        opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            opts.inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
+        }
         Bitmap tmp;
         FileEditor fileEditor = FileEditorFactoryWithUpnp.getFileEditorForUrl(rawFile, null);
         InputStream stream = null;
@@ -144,8 +150,11 @@ public class ImageScaler {
         }
         if (DBG) Log.d(TAG, dbgTimer.step() + " JustDecodeBounds, size is (" + width + "," + height + ")");
 
-        // if image smaller than bounds, just copy it
-        if (noscale || (height <= maxHeight && width <= maxWidth)) {
+        boolean needsColorSpaceConversion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && opts.outColorSpace != null && !opts.outColorSpace.isSrgb();
+
+        // if image smaller than bounds and already sRGB, just copy it
+        if (!needsColorSpaceConversion && (noscale || (height <= maxHeight && width <= maxWidth))) {
             if (DBG) Log.d(TAG, "Image smaller than bounds, copy it instead of resampling.");
             boolean success = copyFile(rawFile, targetName);
             if (DBG) Log.d(TAG, dbgTimer.step() + " copyFile, result is " + success);
@@ -153,8 +162,13 @@ public class ImageScaler {
             return success;
         }
 
-        opts.inSampleSize = getSampleSize(width, height, maxWidth, maxHeight, inside);
+        opts.inSampleSize = (noscale || maxWidth <= 0 || maxHeight <= 0)
+                ? 1 : getSampleSize(width, height, maxWidth, maxHeight, inside);
         opts.inJustDecodeBounds = false;
+        opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            opts.inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
+        }
 
         try {
             Bitmap sampled;
@@ -201,23 +215,25 @@ public class ImageScaler {
             int scaledHeight = height;
             float scale = 1;
             // scale down
-            if (inside) {
-                if (height > maxHeight || width > maxWidth) {
-                    float scaleX = maxHeight / (float) height;
-                    float scaleY = maxWidth / (float) width;
-                    scale = Math.min(scaleX, scaleY);
-                    scaledWidth = (int) (width * scale);
-                    scaledHeight = (int) (height * scale);
-                    needsScale = true;
-                }
-            } else {
-                if (height > maxHeight && width > maxWidth) {
-                    float scaleX = maxHeight / (float) height;
-                    float scaleY = maxWidth / (float) width;
-                    scale = Math.max(scaleX, scaleY);
-                    scaledWidth = (int) (width * scale);
-                    scaledHeight = (int) (height * scale);
-                    needsScale = true;
+            if (!noscale && maxWidth > 0 && maxHeight > 0) {
+                if (inside) {
+                    if (height > maxHeight || width > maxWidth) {
+                        float scaleX = maxHeight / (float) height;
+                        float scaleY = maxWidth / (float) width;
+                        scale = Math.min(scaleX, scaleY);
+                        scaledWidth = (int) (width * scale);
+                        scaledHeight = (int) (height * scale);
+                        needsScale = true;
+                    }
+                } else {
+                    if (height > maxHeight && width > maxWidth) {
+                        float scaleX = maxHeight / (float) height;
+                        float scaleY = maxWidth / (float) width;
+                        scale = Math.max(scaleX, scaleY);
+                        scaledWidth = (int) (width * scale);
+                        scaledHeight = (int) (height * scale);
+                        needsScale = true;
+                    }
                 }
             }
             // crop overlap
@@ -225,7 +241,7 @@ public class ImageScaler {
             int decodeWidth = width;
             int yOffs = 0;
             int decodeHeight = height;
-            if (crop) {
+            if (!noscale && crop && maxWidth > 0 && maxHeight > 0) {
                 if (scaledWidth > maxWidth || scaledHeight > maxHeight) {
                     // compute resulting scaled size
                     int resultWidth = Math.min(scaledWidth, maxWidth);
