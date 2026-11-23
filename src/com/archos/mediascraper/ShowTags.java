@@ -156,6 +156,8 @@ public class ShowTags extends VideoTags {
     };
 
     private static final String NAME_SELECTION = ScraperStore.Show.NAME + "=?";
+    private static final String NAME_WITHOUT_ONLINEID_SELECTION = ScraperStore.Show.NAME + "=? AND (" +
+            ScraperStore.Show.ONLINE_ID + " IS NULL OR " + ScraperStore.Show.ONLINE_ID + "<=0)";
     private static final String ONLINEID_SELECTION = ScraperStore.Show.ONLINE_ID + "=?";
     private static final String NAME_ONLINEID_SELECTION = ScraperStore.Show.NAME + "=? AND " +
             ScraperStore.Show.ONLINE_ID + "=?";
@@ -171,6 +173,17 @@ public class ShowTags extends VideoTags {
 
     @Override
     public long save(Context context, long videoId) {
+        // ShowTags instances may be cached and reused across episodes (e.g. NfoParser.ImportContext),
+        // so reset all per-save resolution state on every invocation.
+        showFound = false;
+        baseInfoChanged = false;
+        updateCover = false;
+        updateBackdrop = false;
+        postersChanged = false;
+        backdropsChanged = false;
+        showId = -1;
+        newCover = null;
+        newBackdrop = null;
 
         // prepare cover / backdrop info
         ScraperImage cover = getDefaultPoster();
@@ -196,53 +209,85 @@ public class ShowTags extends VideoTags {
         if (log.isDebugEnabled()) log.debug("save: called for show mTitle={} mId={} mOnlineId={} mTitleDate={} mPremieredYear={}",
                 mTitle, mId, mOnlineId, mTitleDate, mPremieredYear);
 
+        final boolean hasValidOnlineId = mOnlineId > 0;
+
         // global logic to avoid creating already existing title conflicting with UNIQUE db requirement
-        if (isShowNameOnlineIdAlreadyKnown(mTitle, mOnlineId, context)) {
-            // update mTitle (UNIQUE)
-            if (log.isDebugEnabled()) log.debug("save: mTitle&mOnlineId known: updating mTitle entry");
-            showFound = true;
-            finalTitle = mTitle;
-        } else {
-            if (isPremieredYearAvailable && isShowNameOnlineIdAlreadyKnown(mTitleDate, mOnlineId, context)) {
+        if (hasValidOnlineId) {
+            if (isShowNameOnlineIdAlreadyKnown(mTitle, mOnlineId, context)) {
+                // update mTitle (UNIQUE)
+                if (log.isDebugEnabled()) log.debug("save: mTitle&mOnlineId known: updating mTitle entry");
+                showFound = true;
+                finalTitle = mTitle;
+            } else if (isPremieredYearAvailable && isShowNameOnlineIdAlreadyKnown(mTitleDate, mOnlineId, context)) {
                 // update mTitleDate (UNIQUE)
                 if (log.isDebugEnabled()) log.debug("save: mTitle+mOnlineId not known but mTitleDate&mOnlineId known: updating mTitleDate entry");
                 showFound = true;
                 finalTitle = mTitleDate;
-            } else {
-                if (isShowNameAlreadyKnown(mTitle, context)) {
-                    if (isPremieredYearAvailable) {
-                        if (isShowNameAlreadyKnown(mTitleDate, context)) {
-                            // update mTitleDate (UNIQUE)
-                            if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known but mTitle&mTitleDate known: updating mTitleDate entry");
-                            showFound = true;
-                            finalTitle = mTitleDate;
-                        } else {
-                            // create mTitleDate (UNIQUE)
-                            if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle known & mTitleDate not known: creating mTitleDate entry");
-                            showFound = false;
-                            finalTitle = mTitleDate;
-                        }
-                    } else {
-                        if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle known and premieredYear not available: updating mTitle entry");
-                        // update mTitle (UNIQUE) --> can raise an issue if 2 shows with different onlineID and no premiered date
+            } else if (isShowNameAlreadyKnown(mTitle, context)) {
+                if (isShowNameWithoutOnlineId(mTitle, context)) {
+                    // Existing local/NFO-only row with same title and no onlineId: reuse and enrich it
+                    if (log.isDebugEnabled()) log.debug("save: mTitle known without onlineId: updating mTitle entry");
+                    showFound = true;
+                    finalTitle = mTitle;
+                } else if (isPremieredYearAvailable) {
+                    if (isShowNameAlreadyKnown(mTitleDate, context)) {
+                        // update mTitleDate (UNIQUE)
+                        if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known but mTitle&mTitleDate known: updating mTitleDate entry");
                         showFound = true;
-                        finalTitle = mTitle;
+                        finalTitle = mTitleDate;
+                    } else {
+                        // create mTitleDate (UNIQUE)
+                        if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle known & mTitleDate not known: creating mTitleDate entry");
+                        showFound = false;
+                        finalTitle = mTitleDate;
                     }
                 } else {
-                    // create mTitle (UNIQUE)
-                    if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle not known: creating mTitle entry");
-                    showFound = false;
+                    if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle known and premieredYear not available: updating mTitle entry");
+                    // update mTitle (UNIQUE) --> can raise an issue if 2 shows with different onlineID and no premiered date
+                    showFound = true;
                     finalTitle = mTitle;
+                }
+            } else {
+                // create mTitle (UNIQUE)
+                if (log.isDebugEnabled()) log.debug("save: (mTitle|mTitleDate)&mOnlineId not known and mTitle not known: creating mTitle entry");
+                showFound = false;
+                finalTitle = mTitle;
+            }
+
+            // Look up by stable onlineId first when a valid onlineId (> 0) is present.
+            updateInfo(ONLINEID_SELECTION, new String[] { String.valueOf(mOnlineId) }, cr);
+            // If we matched an existing row by name (e.g. NFO-only row with online_id=0)
+            // and onlineId lookup did not find a row, resolve showId by finalTitle.
+            if (showId < 0 && showFound) {
+                updateInfo(NAME_SELECTION, new String[] { finalTitle }, cr);
+                if (showId < 0) {
+                    showFound = false;
+                }
+            }
+        } else {
+            // No valid onlineId (e.g. local tvshow.nfo without <id>/<uniqueid type="tmdb">).
+            // Never query ONLINEID_SELECTION with <= 0, otherwise unrelated NFO-only shows collide.
+            if (isShowNameAlreadyKnown(mTitle, context)) {
+                if (log.isDebugEnabled()) log.debug("save: no onlineId, mTitle known: reusing mTitle entry");
+                showFound = true;
+                finalTitle = mTitle;
+            } else if (isPremieredYearAvailable && isShowNameAlreadyKnown(mTitleDate, context)) {
+                if (log.isDebugEnabled()) log.debug("save: no onlineId, mTitleDate known: reusing mTitleDate entry");
+                showFound = true;
+                finalTitle = mTitleDate;
+            } else {
+                if (log.isDebugEnabled()) log.debug("save: no onlineId, show not known: creating mTitle entry");
+                showFound = false;
+                finalTitle = mTitle;
+            }
+
+            if (showFound) {
+                updateInfo(NAME_SELECTION, new String[] { finalTitle }, cr);
+                if (showId < 0) {
+                    showFound = false;
                 }
             }
         }
-
-        // NAME_SELECTION new String[] { mTitle }
-        // ONLINEID_SELECTION new String[] { String.valueOf(mOnlineId) }
-        // NAME_ONLINEID_SELECTION new String[] { mTitle, String.valueOf(mOnlineId) }
-
-        // only update info based on onlineId since it is the source of truth (not the name)
-        updateInfo(ONLINEID_SELECTION, new String[] { String.valueOf(mOnlineId)  }, cr);
 
         if (log.isDebugEnabled()) {
             log.debug("save: show onlineId={} parsed original_language={} original_title={} spoken_languages={} showFound={} baseInfoChanged={}",
@@ -254,42 +299,105 @@ public class ShowTags extends VideoTags {
             if (log.isDebugEnabled()) log.debug("save: show not found in db or baseInfo changed");
             // got to insert or update the baseinfo.
             ContentValues values = new ContentValues();
-            // never update NAME if showFound not to break UNIQUE even using same NAME...
-            if (!showFound) values.put(ScraperStore.Show.NAME, finalTitle);
-            values.put(ScraperStore.Show.ONLINE_ID, Long.valueOf(mOnlineId));
-            values.put(ScraperStore.Show.IMDB_ID, mImdbId);
-            values.put(ScraperStore.Show.CONTENT_RATING, mContentRating);
-            values.put(ScraperStore.Show.PREMIERED, mPremiered == null ? null : Long.valueOf(mPremiered.getTime()));
-            values.put(ScraperStore.Show.RATING, Float.valueOf(mRating));
-            values.put(ScraperStore.Show.PLOT, mPlot);
-            values.put(ScraperStore.Show.ORIGINAL_LANGUAGE, mOriginalLanguage);
-            values.put(ScraperStore.Show.ORIGINAL_TITLE, mOriginalTitle);
-            values.put(ScraperStore.Show.SPOKEN_LANGUAGES, mSpokenLanguages);
-            values.put(ScraperStore.Show.TITLE_LANGUAGE, mTitleLanguage);
-            values.put(ScraperStore.Show.SORT_NAME, com.archos.mediascraper.preprocess.SortTitleUtils.extractSortTitle(finalTitle, mTitleLanguage));
+            if (!showFound) {
+                values.put(ScraperStore.Show.NAME, finalTitle);
+                values.put(ScraperStore.Show.ONLINE_ID, Long.valueOf(mOnlineId));
+                values.put(ScraperStore.Show.IMDB_ID, mImdbId);
+                values.put(ScraperStore.Show.CONTENT_RATING, mContentRating);
+                values.put(ScraperStore.Show.PREMIERED, mPremiered == null ? null : Long.valueOf(mPremiered.getTime()));
+                values.put(ScraperStore.Show.RATING, Float.valueOf(mRating));
+                values.put(ScraperStore.Show.PLOT, mPlot);
+                values.put(ScraperStore.Show.ORIGINAL_LANGUAGE, mOriginalLanguage);
+                values.put(ScraperStore.Show.ORIGINAL_TITLE, mOriginalTitle);
+                values.put(ScraperStore.Show.SPOKEN_LANGUAGES, mSpokenLanguages);
+                values.put(ScraperStore.Show.TITLE_LANGUAGE, mTitleLanguage);
+                values.put(ScraperStore.Show.SORT_NAME, com.archos.mediascraper.preprocess.SortTitleUtils.extractSortTitle(finalTitle, mTitleLanguage));
 
-            values.put(ScraperStore.Show.ACTORS_FORMATTED, getActorsFormatted());
-            values.put(ScraperStore.Show.DIRECTORS_FORMATTED, getDirectorsFormatted());
-            values.put(ScraperStore.Show.WRITERS_FORMATTED, getWritersFormatted());
-            values.put(ScraperStore.Show.GERNES_FORMATTED, getGenresFormatted());
-            values.put(ScraperStore.Show.GENRE_IDS, getGenreIds());
-            values.put(ScraperStore.Show.STUDIOS_FORMATTED, getStudiosFormatted());
-
-            if (!showFound || updateCover) {
+                values.put(ScraperStore.Show.ACTORS_FORMATTED, getActorsFormatted());
+                values.put(ScraperStore.Show.DIRECTORS_FORMATTED, getDirectorsFormatted());
+                values.put(ScraperStore.Show.WRITERS_FORMATTED, getWritersFormatted());
+                values.put(ScraperStore.Show.GERNES_FORMATTED, getGenresFormatted());
+                values.put(ScraperStore.Show.GENRE_IDS, getGenreIds());
+                values.put(ScraperStore.Show.STUDIOS_FORMATTED, getStudiosFormatted());
                 values.put(ScraperStore.Show.COVER, newCover);
-            }
-            if (!showFound || updateBackdrop) {
                 values.put(ScraperStore.Show.BACKDROP, newBackdrop);
                 values.put(ScraperStore.Show.BACKDROP_URL, newBackdropUrl);
+            } else {
+                // Only overwrite existing show columns when the incoming tag has meaningful values
+                // so a sparse local NFO never clobbers richer TMDB metadata.
+                if (hasValidOnlineId) {
+                    values.put(ScraperStore.Show.ONLINE_ID, Long.valueOf(mOnlineId));
+                }
+                if (!TextUtils.isEmpty(mImdbId)) {
+                    values.put(ScraperStore.Show.IMDB_ID, mImdbId);
+                }
+                if (!TextUtils.isEmpty(mContentRating)) {
+                    values.put(ScraperStore.Show.CONTENT_RATING, mContentRating);
+                }
+                if (mPremiered != null) {
+                    values.put(ScraperStore.Show.PREMIERED, Long.valueOf(mPremiered.getTime()));
+                }
+                if (mRating > 0f) {
+                    values.put(ScraperStore.Show.RATING, Float.valueOf(mRating));
+                }
+                if (!TextUtils.isEmpty(mPlot)) {
+                    values.put(ScraperStore.Show.PLOT, mPlot);
+                }
+                if (isKnownLanguage(mOriginalLanguage)) {
+                    values.put(ScraperStore.Show.ORIGINAL_LANGUAGE, mOriginalLanguage);
+                }
+                if (!TextUtils.isEmpty(mOriginalTitle)) {
+                    values.put(ScraperStore.Show.ORIGINAL_TITLE, mOriginalTitle);
+                }
+                if (!TextUtils.isEmpty(mSpokenLanguages)) {
+                    values.put(ScraperStore.Show.SPOKEN_LANGUAGES, mSpokenLanguages);
+                }
+                if (isKnownLanguage(mTitleLanguage)) {
+                    values.put(ScraperStore.Show.TITLE_LANGUAGE, mTitleLanguage);
+                    values.put(ScraperStore.Show.SORT_NAME, com.archos.mediascraper.preprocess.SortTitleUtils.extractSortTitle(finalTitle, mTitleLanguage));
+                }
+                final String actorsFormatted = getActorsFormatted();
+                if (!TextUtils.isEmpty(actorsFormatted)) {
+                    values.put(ScraperStore.Show.ACTORS_FORMATTED, actorsFormatted);
+                }
+                final String directorsFormatted = getDirectorsFormatted();
+                if (!TextUtils.isEmpty(directorsFormatted)) {
+                    values.put(ScraperStore.Show.DIRECTORS_FORMATTED, directorsFormatted);
+                }
+                final String writersFormatted = getWritersFormatted();
+                if (!TextUtils.isEmpty(writersFormatted)) {
+                    values.put(ScraperStore.Show.WRITERS_FORMATTED, writersFormatted);
+                }
+                final String genresFormatted = getGenresFormatted();
+                if (!TextUtils.isEmpty(genresFormatted)) {
+                    values.put(ScraperStore.Show.GERNES_FORMATTED, genresFormatted);
+                }
+                final String genreIds = getGenreIds();
+                if (!TextUtils.isEmpty(genreIds)) {
+                    values.put(ScraperStore.Show.GENRE_IDS, genreIds);
+                }
+                final String studiosFormatted = getStudiosFormatted();
+                if (!TextUtils.isEmpty(studiosFormatted)) {
+                    values.put(ScraperStore.Show.STUDIOS_FORMATTED, studiosFormatted);
+                }
+                if (updateCover) {
+                    values.put(ScraperStore.Show.COVER, newCover);
+                }
+                if (updateBackdrop) {
+                    values.put(ScraperStore.Show.BACKDROP, newBackdrop);
+                    values.put(ScraperStore.Show.BACKDROP_URL, newBackdropUrl);
+                }
             }
             if (showFound) {
                 // update if it is already there
-                if (log.isDebugEnabled()) log.debug("Updating show base info: mTitle {} -> finalTitle {} showId {}", mTitle, finalTitle, showId);
-                Uri uri = ContentUris.withAppendedId(ScraperStore.Show.URI.ID, showId);
-                int update = cr.update(uri, values, null, null);
-                if (update != 1) {
-                    log.error("update Show id {} failed", showId);
-                    return -1;
+                if (values.size() > 0) {
+                    if (log.isDebugEnabled()) log.debug("Updating show base info: mTitle {} -> finalTitle {} showId {}", mTitle, finalTitle, showId);
+                    Uri uri = ContentUris.withAppendedId(ScraperStore.Show.URI.ID, showId);
+                    int update = cr.update(uri, values, null, null);
+                    if (update != 1) {
+                        log.error("update Show id {} failed", showId);
+                        return -1;
+                    }
                 }
             } else {
                 // insert if not in db otherwise crash with UNIQUE name constraint
@@ -299,12 +407,14 @@ public class ShowTags extends VideoTags {
                 long result = inserted == null ? -1 : ContentUris.parseId(inserted);
                 if (result == -1) {
                     // Another scrape worker may have inserted the show after our lookup.
-                    // Re-read by the stable online id, then by the unique display name.
-                    updateInfo(ONLINEID_SELECTION, new String[] { String.valueOf(mOnlineId) }, cr);
-                    if (!showFound) {
+                    // Re-read by the stable online id (only when valid > 0), then by the unique display name.
+                    if (hasValidOnlineId) {
+                        updateInfo(ONLINEID_SELECTION, new String[] { String.valueOf(mOnlineId) }, cr);
+                    }
+                    if (showId < 0) {
                         updateInfo(NAME_SELECTION, new String[] { finalTitle }, cr);
                     }
-                    if (!showFound) {
+                    if (showId < 0) {
                         log.error("insert Show failed and no existing row was found");
                         return -1;
                     }
@@ -450,6 +560,12 @@ public class ShowTags extends VideoTags {
     private static final boolean newLongIsBetter(long oldValue, long newValue) {
         // same as the String thing
         return newValue > 0 && (oldValue <= 0 || oldValue != newValue);
+    }
+    private static boolean isKnownLanguage(String language) {
+        return language != null && !language.isEmpty() && !"und".equals(language);
+    }
+    private static boolean newLanguageIsBetter(String oldLanguage, String newLanguage) {
+        return isKnownLanguage(newLanguage) && newStringIsBetter(oldLanguage, newLanguage);
     }
     public void setPremiered(Date prem) { mPremiered = prem; }
     public void setPremiered(long prem) { mPremiered = new Date(prem); }
@@ -661,13 +777,21 @@ public class ShowTags extends VideoTags {
         return isKnown;
     }
 
+    private boolean isShowNameWithoutOnlineId(String showName, Context context) {
+        boolean isKnown = isKnown(new String[] {ScraperStore.Show.ID}, NAME_WITHOUT_ONLINEID_SELECTION, new String[] { showName }, context);
+        if (log.isDebugEnabled()) log.debug("isShowNameWithoutOnlineId: {} {}", showName, isKnown);
+        return isKnown;
+    }
+
     private boolean isShowOnlineIdAlreadyKnown(long onlineId, Context context) {
+        if (onlineId <= 0) return false;
         boolean isKnown = isKnown(new String[] {ScraperStore.Show.ID}, ONLINEID_SELECTION, new String[] { String.valueOf(onlineId) }, context);
         if (log.isDebugEnabled()) log.debug("isShowIdAlreadyKnown: {} {}", onlineId, isKnown);
         return isKnown;
     }
 
     private boolean isShowNameOnlineIdAlreadyKnown(String showName, long onlineId, Context context) {
+        if (onlineId <= 0) return false;
         boolean isKnown = isKnown(new String[] {ScraperStore.Show.ID, ScraperStore.Show.ONLINE_ID}, NAME_ONLINEID_SELECTION, new String[] { showName, String.valueOf(onlineId) }, context);
         if (log.isDebugEnabled()) log.debug("isShowNameAlreadyKnown: {} {}", showName, isKnown);
         return isKnown;
@@ -729,10 +853,10 @@ public class ShowTags extends VideoTags {
                                 newStringIsBetter(storedImdb, mImdbId) ||
                                 newLongIsBetter(storedOnlineId, mOnlineId) ||
                                 newStringIsBetter(storedPlot, mPlot) ||
-                                newStringIsBetter(storedOriginalLanguage, mOriginalLanguage) ||
+                                newLanguageIsBetter(storedOriginalLanguage, mOriginalLanguage) ||
                                 newStringIsBetter(storedOriginalTitle, mOriginalTitle) ||
                                 newStringIsBetter(storedSpokenLanguages, mSpokenLanguages) ||
-                                newStringIsBetter(storedTitleLanguage, mTitleLanguage);
+                                newLanguageIsBetter(storedTitleLanguage, mTitleLanguage);
 
                 if (log.isDebugEnabled()) log.debug("updateInfo: show found in db: updateCover {}, updateBackdrop {} baseInfoChanged {}",
                         updateCover, updateBackdrop, baseInfoChanged);

@@ -24,6 +24,7 @@ import com.archos.mediascraper.StringMatcher;
 
 import org.xml.sax.Attributes;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map.Entry;
@@ -202,7 +203,8 @@ public class NfoShowHandler extends BasicHandler {
             case 1:
                 switch (STRINGS.match(localName)) {
                     case TITLE:
-                        mResult.setTitle(getString());
+                        String showTitle = getString();
+                        mResult.setTitle(showTitle != null ? Normalizer.normalize(showTitle, Normalizer.Form.NFC) : null);
                         break;
                     case RATING:
                         mResult.setRating(getFloat());

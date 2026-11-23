@@ -30,6 +30,7 @@ import com.archos.mediascraper.ScrapeDetailResult;
 import com.archos.mediascraper.ScrapeSearchResult;
 import com.archos.mediascraper.ScrapeStatus;
 import com.archos.mediascraper.SearchResult;
+import com.archos.mediascraper.ShowTags;
 import com.archos.mediascraper.preprocess.SearchInfo;
 import com.archos.mediascraper.preprocess.TvShowSearchInfo;
 import com.archos.medialib.R;
@@ -163,5 +164,37 @@ public class ShowScraper4TitleCollisionFallbackTest {
 
         assertEquals("cascade must be bounded to the distance-0 tied candidates",
                 2, scraper.detailFetchCount);
+    }
+
+    @Test
+    public void missingEpisodeBeyondTmdbCountPopulatesPlaceholderTitleFromShowTags() {
+        List<SearchResult> candidates = new ArrayList<>();
+        candidates.add(candidate(40424, 0));
+
+        ShowScraper4 scraper = new ShowScraper4(context) {
+            @Override
+            public ScrapeSearchResult getMatches2(SearchInfo info, int maxItems) {
+                for (SearchResult c : candidates) c.setScraper(this);
+                return new ScrapeSearchResult(candidates, false, ScrapeStatus.OKAY, null);
+            }
+
+            @Override
+            protected ScrapeDetailResult getDetailsInternal(SearchResult result, Bundle options) {
+                ShowTags showTags = new ShowTags();
+                showTags.setTitle("頭文字D");
+                showTags.setOnlineId(40424);
+                EpisodeTags ep = new EpisodeTags();
+                ep.setShowTags(showTags);
+                ep.setSeason(4);
+                ep.setEpisode(15);
+                return new ScrapeDetailResult(ep, false, null, ScrapeStatus.OKAY, null);
+            }
+        };
+
+        ScrapeDetailResult res = scraper.searchWithTitleCollisionFallback(
+                new TvShowSearchInfo(Uri.parse("file:///InitialD/S04E15.mp4"), "頭文字D", 4, 15, null, null));
+
+        assertNotNull(res);
+        assertEquals("頭文字D S4E15", ((EpisodeTags) res.tag).getTitle());
     }
 }

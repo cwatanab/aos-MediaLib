@@ -856,6 +856,7 @@ public class AutoScrapeService extends Service implements DefaultLifecycleObserv
                             // Process in windowed batches using keyset pagination (_ID > lastSeenId)
                             // to avoid CursorWindow overflow and ensure stable pagination
                             // even when rows are modified during iteration
+                            NfoParser.ImportContext nfoImportContext = new NfoParser.ImportContext();
                             long lastSeenId = -1;
                             boolean hasMoreRows = true;
                             while (hasMoreRows && isEnable(AutoScrapeService.this) && (isForeground || isForceAfterNetworkScan) && !Thread.currentThread().isInterrupted()) {
@@ -924,7 +925,7 @@ public class AutoScrapeService extends Service implements DefaultLifecycleObserv
 
                                 //Grab NFO Tags for the File if they exist, and skip the scrape.
                                 if (noScrapeError && NfoParser.isNetworkNfoParseEnabled(AutoScrapeService.this) && !fileUri.toString().toLowerCase().startsWith("upnp")) {
-                                    BaseTags tags = NfoParser.getTagForFile(fileUri, AutoScrapeService.this);
+                                    BaseTags tags = NfoParser.getTagForFile(fileUri, AutoScrapeService.this, nfoImportContext);
                                     if (tags != null) {
                                         if (log.isTraceEnabled()) log.trace("startScraping: found NFO");
                                         // if poster url are in nfo or in folder, download is automatic

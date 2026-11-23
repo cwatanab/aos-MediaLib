@@ -23,6 +23,7 @@ import com.archos.mediascraper.StringMatcher;
 
 import org.xml.sax.Attributes;
 
+import java.text.Normalizer;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -218,10 +219,12 @@ public class NfoEpisodeHandler extends BasicSubParseHandler {
             case 1:
                 switch (STRINGS.match(localName)) {
                     case TITLE:
-                        mResult.setTitle(getString());
+                        String epTitle = getString();
+                        mResult.setTitle(epTitle != null ? Normalizer.normalize(epTitle, Normalizer.Form.NFC) : null);
                         break;
                     case SHOWTITLE:
-                        mResult.setShowTitle(getString());
+                        String showTitle = getString();
+                        mResult.setShowTitle(showTitle != null ? Normalizer.normalize(showTitle, Normalizer.Form.NFC) : null);
                         break;
                     case RATING:
                         mResult.setRating(getFloat());

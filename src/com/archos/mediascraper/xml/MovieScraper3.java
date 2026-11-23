@@ -53,8 +53,10 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
@@ -295,6 +297,46 @@ public class MovieScraper3 extends BaseScraper2 {
             }
         }
 
+        // Fallback: series-numbered / SP / edition-tagged / dual-title Japanese filenames
+        String matchedFallbackQuery = null;
+        if (allResults.isEmpty() && status != ScrapeStatus.AUTH_ERROR) {
+            List<String> fallbackQueries = buildFallbackMovieQueries(searchInfo.getName());
+            if (!fallbackQueries.isEmpty()) {
+                if (searchInfo.getYear() != null) {
+                    for (String fq : fallbackQueries) {
+                        if (log.isDebugEnabled()) log.debug("getMatches2: trying fallback query '{}' with year {}", fq, searchInfo.getYear());
+                        SearchMovieResult searchResult = SearchMovie2.search(fq, language, searchInfo.getYear(), maxItems, getSearchService(), adultScrape);
+                        if (searchResult.status == ScrapeStatus.OKAY && searchResult.result != null && !searchResult.result.isEmpty()) {
+                            for (SearchResult result : searchResult.result) {
+                                result.setScraper(this);
+                                result.setFile(searchInfo.getFile());
+                            }
+                            allResults.addAll(searchResult.result);
+                            status = ScrapeStatus.OKAY;
+                            matchedFallbackQuery = fq;
+                            break;
+                        }
+                    }
+                }
+                if (allResults.isEmpty()) {
+                    for (String fq : fallbackQueries) {
+                        if (log.isDebugEnabled()) log.debug("getMatches2: trying fallback query '{}' without year", fq);
+                        SearchMovieResult searchResult = SearchMovie2.search(fq, language, null, maxItems, getSearchService(), adultScrape);
+                        if (searchResult.status == ScrapeStatus.OKAY && searchResult.result != null && !searchResult.result.isEmpty()) {
+                            for (SearchResult result : searchResult.result) {
+                                result.setScraper(this);
+                                result.setFile(searchInfo.getFile());
+                            }
+                            allResults.addAll(searchResult.result);
+                            status = ScrapeStatus.OKAY;
+                            matchedFallbackQuery = fq;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Fallback: if still no results, try "Head" of the title (before first punctuation)
         if (allResults.isEmpty() && status != ScrapeStatus.AUTH_ERROR) {
             String filename = com.archos.filecorelibrary.FileUtils.getName(searchInfo.getFile());
@@ -352,6 +394,7 @@ public class MovieScraper3 extends BaseScraper2 {
         org.apache.commons.text.similarity.LevenshteinDistance levenshteinDistance = org.apache.commons.text.similarity.LevenshteinDistance.getDefaultInstance();
         String referenceNameLC = referenceName.toLowerCase();
         String cleanedNameLC = cleanedName.toLowerCase();
+        String matchedFallbackLC = matchedFallbackQuery != null ? matchedFallbackQuery.toLowerCase(Locale.ROOT) : null;
 
         // Expected release year parsed from the filename, if any: used below to penalize
         // candidates whose actual TMDb release year clearly does not match, so that a title that
@@ -381,13 +424,19 @@ public class MovieScraper3 extends BaseScraper2 {
             String originalTitleLC = originalTitle != null ? originalTitle.toLowerCase() : "";
 
             int distance;
-            // BOOST: Exact match for cleaned name gets priority (distance 0)
-            if (titleLC.equals(cleanedNameLC) || originalTitleLC.equals(cleanedNameLC)) {
+            // BOOST: Exact match for cleaned name (or matched fallback query) gets priority (distance 0)
+            if (titleLC.equals(cleanedNameLC) || originalTitleLC.equals(cleanedNameLC)
+                    || (matchedFallbackLC != null && (titleLC.equals(matchedFallbackLC) || originalTitleLC.equals(matchedFallbackLC)))) {
                 distance = 0;
             } else {
                 int distTitle = title != null ? levenshteinDistance.apply(referenceNameLC, titleLC) : Integer.MAX_VALUE;
                 int distOrig = originalTitle != null ? levenshteinDistance.apply(referenceNameLC, originalTitleLC) : Integer.MAX_VALUE;
                 distance = Math.min(distTitle, distOrig);
+                if (matchedFallbackLC != null) {
+                    int fbTitle = title != null ? levenshteinDistance.apply(matchedFallbackLC, titleLC) : Integer.MAX_VALUE;
+                    int fbOrig = originalTitle != null ? levenshteinDistance.apply(matchedFallbackLC, originalTitleLC) : Integer.MAX_VALUE;
+                    distance = Math.min(distance, Math.min(fbTitle, fbOrig));
+                }
             }
 
             // PENALTY: an exact (or near) title match is not a genuine match if its actual TMDb
@@ -460,6 +509,118 @@ public class MovieScraper3 extends BaseScraper2 {
         if (!matcher.find()) return Integer.MAX_VALUE;
         String head = titleLC.substring(0, matcher.end());
         return levenshteinDistance.apply(queryLC, head);
+    }
+
+    private static final Pattern SERIES_INDEX_PATTERN = Pattern.compile(
+            "^(.+?)\\s+(?:(0[1-9](?:-[1-9])?)|(SP\\d*|スピンオフ))(?:\\s+(.+))?$",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final Pattern EDITION_DISC_SUFFIX_PATTERN = Pattern.compile(
+            "(?i)(?:\\s+(?:特別版|完全版|ディレクターズ・?カット版?|前編|後編|Disc\\s*\\d+|CD\\s*\\d+))+$");
+
+    /**
+     * Builds ordered fallback search queries for Japanese library naming conventions
+     * (zero-padded series indices {@code 01}, {@code 07-1}, {@code SP}, {@code スピンオフ},
+     * edition/disc suffixes, {@code ／} dual titles, and {@code 「...」}/{@code （...）}/{@code ～...～}
+     * subtitles). Only triggered when primary TMDb searches yield no results, so standard titles
+     * like "Ocean's 11" or "District 9" are unaffected.
+     */
+    static List<String> buildFallbackMovieQueries(String cleanedName) {
+        if (cleanedName == null) return Collections.emptyList();
+        String base = Normalizer.normalize(cleanedName, Normalizer.Form.NFC).trim();
+        if (base.isEmpty()) return Collections.emptyList();
+
+        Set<String> queries = new LinkedHashSet<>();
+
+        // Rule B: strip trailing edition/part/disc markers first so later rules see the clean core title
+        String withoutEdition = EDITION_DISC_SUFFIX_PATTERN.matcher(base).replaceFirst("").trim();
+        if (!withoutEdition.isEmpty() && !withoutEdition.equals(base)) {
+            queries.add(withoutEdition);
+        }
+
+        // Rule A: zero-padded series index / SP / スピンオフ ("アナと雪の女王 02", "ハリー・ポッター 07-1 死の秘宝 PART1")
+        String seriesTarget = withoutEdition.isEmpty() ? base : withoutEdition;
+        Matcher seriesMatcher = SERIES_INDEX_PATTERN.matcher(seriesTarget);
+        if (seriesMatcher.matches()) {
+            String prefix = seriesMatcher.group(1).trim();
+            String numToken = seriesMatcher.group(2);
+            String subtitle = seriesMatcher.group(4) != null ? seriesMatcher.group(4).trim() : null;
+            if (subtitle != null && !subtitle.isEmpty()) {
+                if ("前編".equals(subtitle) || "後編".equals(subtitle)) {
+                    queries.add(prefix);
+                } else {
+                    queries.add(prefix + " " + subtitle);
+                    if (numToken != null && !numToken.equals("01") && !numToken.contains("-")) {
+                        String unpadded = String.valueOf(Integer.parseInt(numToken));
+                        queries.add(prefix + unpadded + " " + subtitle);
+                    }
+                    if (subtitle.length() >= 3 && !subtitle.matches("(?i)(?:the\\s+movie.*|part\\s*\\d+|disc\\s*\\d+)")) {
+                        queries.add(subtitle);
+                    }
+                    queries.add(prefix);
+                }
+            } else {
+                if (numToken != null && !numToken.equals("01") && !numToken.contains("-")) {
+                    String unpadded = String.valueOf(Integer.parseInt(numToken));
+                    queries.add(prefix + " " + unpadded);
+                    queries.add(prefix + unpadded);
+                }
+                queries.add(prefix);
+            }
+        }
+
+        // Rule C: full-width or half-width slash dual title / actor prefix ("ジャッキー・チェン／成龍拳", "TIME／タイム")
+        String slashSource = withoutEdition.isEmpty() ? base : withoutEdition;
+        if (slashSource.indexOf('／') >= 0 || slashSource.indexOf('/') >= 0) {
+            queries.add(slashSource.replace('／', ' ').replace('/', ' ').replaceAll("\\s+", " ").trim());
+            String[] parts = slashSource.split("[／/]", 2);
+            if (parts.length == 2) {
+                String right = cleanWaveAndBrackets(parts[1].trim());
+                String left = cleanWaveAndBrackets(parts[0].trim());
+                if (right.length() >= 2) queries.add(right);
+                if (left.length() >= 2) queries.add(left);
+            }
+        }
+
+        // Rule D: Japanese corner brackets, full-width ruby parens, and tilde subtitles
+        if (containsJapaneseOrnament(base)) {
+            addOrnamentCleanedQueries(queries, base);
+            if (!withoutEdition.equals(base)) {
+                addOrnamentCleanedQueries(queries, withoutEdition);
+            }
+        }
+
+        queries.remove("");
+        queries.remove(base);
+        return new ArrayList<>(queries);
+    }
+
+    private static boolean containsJapaneseOrnament(String s) {
+        return s.indexOf('「') >= 0 || s.indexOf('」') >= 0
+                || s.indexOf('（') >= 0 || s.indexOf('）') >= 0
+                || s.indexOf('～') >= 0 || s.indexOf('〜') >= 0;
+    }
+
+    private static String cleanWaveAndBrackets(String s) {
+        return s.replaceAll("[～〜][^～〜]*[～〜]?", " ")
+                .replaceAll("（[^）]*）", "")
+                .replaceAll("[「」]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private static void addOrnamentCleanedQueries(Set<String> queries, String input) {
+        String noWave = cleanWaveAndBrackets(input);
+        if (!noWave.isEmpty()) {
+            queries.add(noWave);
+            if (noWave.startsWith("劇場版 ") && noWave.length() > 4) {
+                String withoutGekijoban = noWave.substring(4).trim();
+                if (!withoutGekijoban.isEmpty()) {
+                    queries.add(withoutGekijoban);
+                    String trimmedPart = EDITION_DISC_SUFFIX_PATTERN.matcher(withoutGekijoban).replaceFirst("").trim();
+                    if (!trimmedPart.isEmpty()) queries.add(trimmedPart);
+                }
+            }
+        }
     }
 
     private String getTitleHead(String name) {

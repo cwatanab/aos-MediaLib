@@ -40,9 +40,13 @@ import org.xml.sax.XMLReader;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.text.Normalizer;
+import java.util.GregorianCalendar;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParser;
@@ -96,6 +100,51 @@ public class NfoParser {
 
     public static final char[] STRING_SPLITTERS = { '|', ',', '/' };
 
+    private static final Uri NO_URI = Uri.EMPTY;
+
+    // Matches dated broadcast filenames like "20150411 #1 長崎〜坂の街〜" or "20260605 武の五輪 ...".
+    // Requires whitespace after YYYYMMDD so camera timestamps (e.g. "20240224_133333") never match.
+    private static final Pattern DATED_EPISODE_PATTERN = Pattern.compile(
+            "^((?:19|20)\\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\s+(.+)$");
+
+    private static final class DatedEpisodeInfo {
+        final int year;
+        final int month;
+        final int day;
+        final String aired;
+        final String title;
+
+        DatedEpisodeInfo(int year, int month, int day, String aired, String title) {
+            this.year = year;
+            this.month = month;
+            this.day = day;
+            this.aired = aired;
+            this.title = title;
+        }
+    }
+
+    private static DatedEpisodeInfo parseDatedEpisode(String nameNoExt) {
+        if (nameNoExt == null || nameNoExt.isEmpty()) return null;
+        String normalized = Normalizer.normalize(nameNoExt, Normalizer.Form.NFC);
+        Matcher m = DATED_EPISODE_PATTERN.matcher(normalized);
+        if (!m.matches()) return null;
+        int year = Integer.parseInt(m.group(1));
+        int month = Integer.parseInt(m.group(2));
+        int day = Integer.parseInt(m.group(3));
+        try {
+            GregorianCalendar cal = new GregorianCalendar(Locale.ROOT);
+            cal.setLenient(false);
+            cal.set(year, month - 1, day, 0, 0, 0);
+            cal.getTimeInMillis();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        String title = m.group(4).trim();
+        if (title.isEmpty()) return null;
+        String aired = String.format(Locale.ROOT, "%04d-%02d-%02d", year, month, day);
+        return new DatedEpisodeInfo(year, month, day, aired, title);
+    }
+
     public static class ImportContext {
         public SAXParser getParser() {
             if (mParser == null)
@@ -140,8 +189,10 @@ public class NfoParser {
         private NfoShowHandler mShowHandler;
         private NfoEpisodeHandler mEpisodeHandler;
 
-        public final LruCache<String, ShowTags> showCache = new LruCache<String, ShowTags>(16);
-        public final LruCache<String, Uri> seasonPosterCache = new LruCache<String, Uri>(16);
+        public final LruCache<String, ShowTags> showCache = new LruCache<String, ShowTags>(32);
+        public final LruCache<String, Uri> seasonPosterCache = new LruCache<String, Uri>(64);
+        public final LruCache<String, Uri> showNfoPathCache = new LruCache<String, Uri>(64);
+        public final LruCache<String, Uri> movieNfoPathCache = new LruCache<String, Uri>(64);
     }
 
     static SAXParser getNewParser() {
@@ -179,12 +230,13 @@ public class NfoParser {
         public Uri videoFolder;
         public Uri videoNfo;
         public Uri showNfo;
+        public boolean datedShowEpisode;
 
         public boolean hasDbId;
         public long dbId;
 
         public boolean hasNfo() {
-            return videoNfo != null;
+            return videoNfo != null || (datedShowEpisode && showNfo != null);
         }
         public boolean isShow() {
             return hasNfo() && showNfo != null;
@@ -196,6 +248,10 @@ public class NfoParser {
     }
 
     public static NfoFile determineNfoFile(Uri video) {
+        return determineNfoFile(video, null);
+    }
+
+    public static NfoFile determineNfoFile(Uri video, ImportContext importContext) {
         if (video == null)
             return null;
 
@@ -214,23 +270,62 @@ public class NfoParser {
             result.videoNfo = movieNfoFile;
             // a custom .archos.nfo episode resolves its show through the parsed show title,
             // but a regular tvshow.nfo may still be the only show metadata available, so look it up too
-            result.showNfo = findShowNfo(videoParent);
+            result.showNfo = findShowNfoCached(videoParent, importContext);
         } else {
             // 1. there should be a "videoname.nfo" file
             Uri nfoFile = Uri.withAppendedPath(videoParent, videoNameNoExt + NFO_EXTENSION);
             if (fileOk(nfoFile)) {
                 result.videoNfo = nfoFile;
                 // 2. there could be a tvshow.nfo file in this or the parent folder if it is a tv show
-                result.showNfo = findShowNfo(videoParent);
+                result.showNfo = findShowNfoCached(videoParent, importContext);
             } else {
                 // 3. single movies in directories could be represented by a movie.nfo file
-                movieNfoFile = Uri.withAppendedPath(videoParent, MOVIE_NFO);
-                if (fileOk(movieNfoFile)) {
+                movieNfoFile = findMovieNfoCached(videoParent, importContext);
+                if (movieNfoFile != null) {
                     result.videoNfo = movieNfoFile;
+                } else if (parseDatedEpisode(videoNameNoExt) != null) {
+                    // 4. dated broadcast episodes ("YYYYMMDD title") in a folder containing tvshow.nfo
+                    Uri showNfo = findShowNfoCached(videoParent, importContext);
+                    if (showNfo != null) {
+                        result.showNfo = showNfo;
+                        result.datedShowEpisode = true;
+                    }
                 }
             }
         }
         return result;
+    }
+
+    private static Uri findMovieNfoCached(Uri videoParent, ImportContext importContext) {
+        if (videoParent == null) return null;
+        if (importContext != null) {
+            String key = videoParent.toString();
+            Uri cached = importContext.movieNfoPathCache.get(key);
+            if (cached != null) {
+                return NO_URI.equals(cached) ? null : cached;
+            }
+            Uri candidate = Uri.withAppendedPath(videoParent, MOVIE_NFO);
+            Uri found = fileOk(candidate) ? candidate : null;
+            importContext.movieNfoPathCache.put(key, found != null ? found : NO_URI);
+            return found;
+        }
+        Uri candidate = Uri.withAppendedPath(videoParent, MOVIE_NFO);
+        return fileOk(candidate) ? candidate : null;
+    }
+
+    private static Uri findShowNfoCached(Uri videoParent, ImportContext importContext) {
+        if (videoParent == null) return null;
+        if (importContext != null) {
+            String key = videoParent.toString();
+            Uri cached = importContext.showNfoPathCache.get(key);
+            if (cached != null) {
+                return NO_URI.equals(cached) ? null : cached;
+            }
+            Uri found = findShowNfo(videoParent);
+            importContext.showNfoPathCache.put(key, found != null ? found : NO_URI);
+            return found;
+        }
+        return findShowNfo(videoParent);
     }
 
     /** Locates a tvshow.nfo in the given folder, falling back to its parent folder
@@ -263,16 +358,21 @@ public class NfoParser {
     }
 
     public static BaseTags getTagForFile(Uri file, Context context) {
-        NfoFile nfo = determineNfoFile(file);
-        if (log.isDebugEnabled()) log.debug("getTagForFile: found nfo file {}, nfo.hasNfo()={}", nfo.videoNfo, nfo.hasNfo());
+        return getTagForFile(file, context, null);
+    }
+
+    public static BaseTags getTagForFile(Uri file, Context context, ImportContext importContext) {
+        NfoFile nfo = determineNfoFile(file, importContext);
+        if (log.isDebugEnabled()) log.debug("getTagForFile: found nfo file {}, datedShow={}, nfo.hasNfo()={}",
+                nfo != null ? nfo.videoNfo : null, nfo != null && nfo.datedShowEpisode, nfo != null && nfo.hasNfo());
         if (nfo != null && nfo.hasNfo()) {
-            return getTagForFile(nfo, context, null);
+            return getTagForFile(nfo, context, importContext);
         }
         return null;
     }
 
     public static BaseTags getTagForFile(NfoFile nfo, Context context, ImportContext importContext) {
-        if (nfo != null && nfo.hasNfo()) {
+        if (nfo != null && nfo.videoNfo != null) {
 
             if (importContext == null)
                 importContext = new ImportContext();
@@ -349,6 +449,29 @@ public class NfoParser {
                         log.error("Failure closing stream", e);
                     }
             }
+        } else if (nfo != null && nfo.datedShowEpisode && nfo.showNfo != null) {
+            if (importContext == null)
+                importContext = new ImportContext();
+            DatedEpisodeInfo dated = parseDatedEpisode(nfo.videoFileNameNoExt);
+            if (dated == null) return null;
+            ShowTags showTags = getShowTagsCached(nfo.showNfo, nfo.videoFile, context, importContext, false);
+            if (showTags == null) return null;
+            EpisodeTags epTags = new EpisodeTags();
+            epTags.setFile(nfo.videoFile);
+            epTags.setShowTags(showTags);
+            epTags.setShowTitle(showTags.getTitle());
+            epTags.setTitle(dated.title);
+            epTags.setSeason(dated.year);
+            epTags.setEpisode(dated.month * 100 + dated.day);
+            epTags.setAired(dated.aired);
+            Uri seasonPoster = findSeasonPosterCached(nfo.videoFile, showTags.getTitle(), dated.year, importContext);
+            if (seasonPoster != null) {
+                epTags.addDefaultPoster(context, seasonPoster, showTags.getTitle());
+            } else if (showTags.getDefaultPoster() != null) {
+                epTags.addDefaultPoster(showTags.getDefaultPoster());
+            }
+            epTags.downloadPoster(context);
+            return epTags;
         }
         return null;
     }
@@ -433,14 +556,12 @@ public class NfoParser {
         // check the cache
         Uri result = importContext.seasonPosterCache.get(key);
         if (result == null) {
-            // if nothing was cached, check the filesystem
-            result = LocalImages.findSeasonPoster(videoFile, showTitle, season);
-            if (result != null) {
-                // put in cache
-                importContext.seasonPosterCache.put(key, result);
-            }
+            // if nothing was cached, check the filesystem and cache negative lookups too
+            Uri found = LocalImages.findSeasonPoster(videoFile, showTitle, season);
+            importContext.seasonPosterCache.put(key, found != null ? found : NO_URI);
+            return found;
         }
-        return result;
+        return NO_URI.equals(result) ? null : result;
     }
 
     private static ShowTags getShowTagsCached(Uri nfoFile, Uri videoFile, Context context,

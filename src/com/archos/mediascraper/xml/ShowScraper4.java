@@ -248,10 +248,12 @@ public class ShowScraper4 extends BaseScraper2 {
         // without improving match precision. In that case behave like a plain single-candidate
         // lookup, same as before this fallback existed.
         boolean isGenuineTitleCollision = topDistance == 0;
+        ScrapeDetailResult firstResult = null;
         ScrapeDetailResult result = null;
         for (SearchResult candidate : searchResult.results) {
             if (candidate.getLevenshteinDistance() != topDistance) break; // only tied candidates
             result = getDetails(candidate, bundle);
+            if (firstResult == null) firstResult = result;
             boolean genuineMatch = result != null && result.tag instanceof EpisodeTags
                     && ((EpisodeTags) result.tag).getTitle() != null;
             if (genuineMatch) {
@@ -261,10 +263,24 @@ public class ShowScraper4 extends BaseScraper2 {
             if (!isGenuineTitleCollision) break; // no cascade beyond the top candidate
             log.info("searchWithTitleCollisionFallback: no genuine episode match for '{}' (id {}), trying next tied candidate", candidate.getTitle(), candidate.getId());
         }
-        // no tied candidate yielded a genuine match: return the last attempted result (top
-        // candidate's placeholder), preserving existing behavior for legitimately-not-found
-        // episodes of the correct show
-        return result;
+        // No tied candidate yielded a genuine match: keep the top candidate's result.
+        // If TMDb matched the show but lacks metadata for the requested episode (common for
+        // DVD-split or unsplit multi-cour anime episodes beyond TMDb's episode count), populate
+        // a placeholder title like "Show SxxEyy" (matching the missing-season fallback) so the
+        // episode still attaches cleanly under its show instead of getting dropped to -2.
+        ScrapeDetailResult fallback = firstResult != null ? firstResult : result;
+        if (fallback != null && fallback.status == ScrapeStatus.OKAY
+                && fallback.tag instanceof EpisodeTags epTag
+                && epTag.getTitle() == null
+                && epTag.getShowTags() != null
+                && epTag.getShowTags().getTitle() != null
+                && !epTag.getShowTags().getTitle().isEmpty()) {
+            epTag.setTitle(epTag.getShowTags().getTitle() + " S" + epTag.getSeason() + "E" + epTag.getEpisode());
+            if (epTag.getDefaultPoster() == null && epTag.getShowTags().getDefaultPoster() != null) {
+                epTag.addDefaultPoster(epTag.getShowTags().getDefaultPoster());
+            }
+        }
+        return fallback;
     }
 
     @Override
@@ -1082,6 +1098,9 @@ public class ShowScraper4 extends BaseScraper2 {
     }
 
     public static boolean isShowAlreadyKnown(Integer showId, Context context) {
+        if (showId == null || showId <= 0) {
+            return false;
+        }
         ContentResolver contentResolver = context.getContentResolver();
         String[] baseProjection = {ScraperStore.Show.ONLINE_ID};
         Cursor cursor = contentResolver.query(
