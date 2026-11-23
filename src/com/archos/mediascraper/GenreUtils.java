@@ -23,12 +23,14 @@ import com.archos.mediaprovider.video.VideoStore;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Language-independent helpers for TMDB genres.
@@ -59,11 +61,50 @@ public final class GenreUtils {
             10763, 10764, 10765, 10766, 10767, 10768, 37
     };
 
+    private static final int[] LEGACY_SHOW_GENRE_STRINGS = {
+            R.string.tv_show_genre_action,
+            R.string.tv_show_genre_adventure,
+            R.string.tv_show_genre_animation,
+            R.string.tv_show_genre_anime,
+            R.string.tv_show_genre_awards_show,
+            R.string.tv_show_genre_children,
+            R.string.tv_show_genre_comedy,
+            R.string.tv_show_genre_crime,
+            R.string.tv_show_genre_documentary,
+            R.string.tv_show_genre_drama,
+            R.string.tv_show_genre_family,
+            R.string.tv_show_genre_fantasy,
+            R.string.tv_show_genre_food,
+            R.string.tv_show_genre_game_show,
+            R.string.tv_show_genre_home_garden,
+            R.string.tv_show_genre_horror,
+            R.string.tv_show_genre_indie,
+            R.string.tv_show_genre_martial_arts,
+            R.string.tv_show_genre_mini_series,
+            R.string.tv_show_genre_musical,
+            R.string.tv_show_genre_mystery,
+            R.string.tv_show_genre_news,
+            R.string.tv_show_genre_podcast,
+            R.string.tv_show_genre_reality,
+            R.string.tv_show_genre_romance,
+            R.string.tv_show_genre_science_fiction,
+            R.string.tv_show_genre_soap,
+            R.string.tv_show_genre_special_interest,
+            R.string.tv_show_genre_sport,
+            R.string.tv_show_genre_suspense,
+            R.string.tv_show_genre_talk_show,
+            R.string.tv_show_genre_thriller,
+            R.string.tv_show_genre_travel,
+            R.string.tv_show_genre_war,
+            R.string.tv_show_genre_western
+    };
+
     /**
-     * BCP-47 tags for every shipped locale that translates genre names. Used to build the
-     * name-to-id reverse map and the legacy fallback predicate.
+     * BCP-47 tags for every shipped locale that translates genre names (plus base "en" and "ja").
+     * Used to build the name-to-id reverse map and the legacy fallback predicate.
      */
     private static final String[] TRANSLATED_LOCALES = {
+            "en", "ja",
             "ar", "cs-CZ", "de", "el-GR", "es", "fr", "hu-HU", "it", "he", "iw",
             "kmr-TR", "ko", "lt-LT", "nl", "pl", "pt-BR", "ru", "sk-SK", "sv-SE",
             "tr-TR", "uk-UA", "vi", "zh-CN", "zh-TW"
@@ -74,6 +115,9 @@ public final class GenreUtils {
     // acceptable for genre name lookups and cheaper than rebuilding on every query.
     private static Map<String, Integer> sMovieNameToId;
     private static Map<String, Integer> sShowNameToId;
+    private static Map<String, Integer> sLegacyGenreNameToRes;
+    private static List<Resources> sTranslatedResources;
+    private static final Map<Integer, Set<String>> sResVariantCache = new ConcurrentHashMap<>();
 
     private GenreUtils() {
     }
@@ -133,6 +177,9 @@ public final class GenreUtils {
      */
     public static String getGenreName(Context context, int id, boolean isShow, String fallback) {
         int res = isShow ? getShowGenreStringRes(id) : getMovieGenreStringRes(id);
+        if (res == 0) {
+            res = isShow ? getMovieGenreStringRes(id) : getShowGenreStringRes(id);
+        }
         if (res != 0) {
             return context.getString(res);
         }
@@ -232,19 +279,76 @@ public final class GenreUtils {
 
     /**
      * Translates a stored (scrape-time localized) genre name into the current app locale by
-     * reverse mapping it to its TMDB id. Returns {@code storedName} unchanged when it cannot be
-     * mapped (non-genre category such as a year, or an unknown/NFO genre).
+     * reverse mapping it to its TMDB id, cross-domain id, or legacy TVDB genre string resource.
+     * Returns {@code storedName} unchanged when it cannot be mapped (non-genre category such as
+     * a year, or an unknown/NFO genre).
      */
     public static String getGenreDisplayName(Context context, String storedName, boolean isShow) {
         if (storedName == null) {
             return null;
         }
-        int id = getGenreIdFromName(context, storedName, isShow);
-        if (id < 0) {
+        String trimmed = storedName.trim();
+        if (trimmed.isEmpty()) {
             return storedName;
         }
-        String name = getGenreName(context, id, isShow, storedName);
-        return name != null ? name : storedName;
+        int id = getGenreIdFromName(context, trimmed, isShow);
+        if (id >= 0) {
+            String name = getGenreName(context, id, isShow, null);
+            if (name != null) {
+                return name;
+            }
+        }
+        String normalized = trimmed.toLowerCase(Locale.ROOT);
+        if (isShow) {
+            Integer legacyRes = getLegacyGenreNameToRes(context).get(normalized);
+            if (legacyRes != null && legacyRes != 0) {
+                return context.getString(legacyRes);
+            }
+        }
+        int crossId = getGenreIdFromName(context, trimmed, !isShow);
+        if (crossId >= 0) {
+            String name = getGenreName(context, crossId, !isShow, null);
+            if (name != null) {
+                return name;
+            }
+        }
+        if (!isShow) {
+            Integer legacyRes = getLegacyGenreNameToRes(context).get(normalized);
+            if (legacyRes != null && legacyRes != 0) {
+                return context.getString(legacyRes);
+            }
+        }
+        return storedName;
+    }
+
+    /**
+     * Translates a comma-separated list of stored genre names into the current app locale,
+     * preserving order and removing duplicates after translation.
+     */
+    public static String localizeGenreList(Context context, String rawGenres, boolean isShow) {
+        if (rawGenres == null || rawGenres.isEmpty()) {
+            return rawGenres;
+        }
+        String[] tokens = rawGenres.split(",");
+        Set<String> translated = new LinkedHashSet<>();
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            translated.add(getGenreDisplayName(context, trimmed, isShow));
+        }
+        if (translated.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String item : translated) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(item);
+        }
+        return sb.toString();
     }
 
     /**
@@ -308,45 +412,95 @@ public final class GenreUtils {
     private static Set<String> getGenreNamesForRes(Context context, int res) {
         Set<String> names = new LinkedHashSet<>();
         names.add(context.getString(res));
-        for (String tag : TRANSLATED_LOCALES) {
-            try {
-                Configuration config = new Configuration(context.getResources().getConfiguration());
-                config.setLocale(Locale.forLanguageTag(tag));
-                Resources resources = context.createConfigurationContext(config).getResources();
-                names.add(resources.getString(res));
-            } catch (Exception ignored) {
+        Set<String> cached = sResVariantCache.get(res);
+        if (cached == null) {
+            Set<String> built = new LinkedHashSet<>();
+            for (Resources resources : getTranslatedResources(context)) {
+                try {
+                    String value = resources.getString(res);
+                    if (value != null && !value.isEmpty()) {
+                        built.add(value);
+                    }
+                } catch (Exception ignored) {
+                }
             }
+            cached = Collections.unmodifiableSet(built);
+            sResVariantCache.put(res, cached);
         }
+        names.addAll(cached);
         return names;
     }
 
-    private static synchronized Map<String, Integer> getMovieNameToId(Context context) {
-        if (sMovieNameToId == null) {
-            sMovieNameToId = buildNameToIdMap(context, MOVIE_GENRE_IDS, false);
-        }
+    private static Map<String, Integer> getMovieNameToId(Context context) {
+        ensureReverseMaps(context);
         return sMovieNameToId;
     }
 
-    private static synchronized Map<String, Integer> getShowNameToId(Context context) {
-        if (sShowNameToId == null) {
-            sShowNameToId = buildNameToIdMap(context, SHOW_GENRE_IDS, true);
-        }
+    private static Map<String, Integer> getShowNameToId(Context context) {
+        ensureReverseMaps(context);
         return sShowNameToId;
     }
 
-    private static Map<String, Integer> buildNameToIdMap(Context context, int[] ids, boolean isShow) {
-        Map<String, Integer> map = new LinkedHashMap<>();
-        addLocaleNames(map, context.getResources(), ids, isShow);
-        for (String tag : TRANSLATED_LOCALES) {
-            try {
-                Configuration config = new Configuration(context.getResources().getConfiguration());
-                config.setLocale(Locale.forLanguageTag(tag));
-                Resources resources = context.createConfigurationContext(config).getResources();
-                addLocaleNames(map, resources, ids, isShow);
-            } catch (Exception ignored) {
+    private static Map<String, Integer> getLegacyGenreNameToRes(Context context) {
+        ensureReverseMaps(context);
+        return sLegacyGenreNameToRes;
+    }
+
+    private static synchronized List<Resources> getTranslatedResources(Context context) {
+        if (sTranslatedResources == null) {
+            Context baseContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+            Configuration baseConfig = baseContext.getResources().getConfiguration();
+            List<Resources> list = new ArrayList<>(TRANSLATED_LOCALES.length);
+            for (String tag : TRANSLATED_LOCALES) {
+                try {
+                    Configuration config = new Configuration(baseConfig);
+                    config.setLocale(Locale.forLanguageTag(tag));
+                    list.add(baseContext.createConfigurationContext(config).getResources());
+                } catch (Exception ignored) {
+                }
             }
+            sTranslatedResources = Collections.unmodifiableList(list);
         }
-        return map;
+        return sTranslatedResources;
+    }
+
+    private static synchronized void ensureReverseMaps(Context context) {
+        if (sMovieNameToId != null && sShowNameToId != null && sLegacyGenreNameToRes != null) {
+            return;
+        }
+        Map<String, Integer> movieMap = new LinkedHashMap<>();
+        Map<String, Integer> showMap = new LinkedHashMap<>();
+        Map<String, Integer> legacyMap = new LinkedHashMap<>();
+
+        Resources currentRes = context.getResources();
+        addLocaleNames(movieMap, currentRes, MOVIE_GENRE_IDS, false);
+        addLocaleNames(showMap, currentRes, SHOW_GENRE_IDS, true);
+        addLegacyLocaleNames(legacyMap, currentRes);
+
+        for (Resources resources : getTranslatedResources(context)) {
+            addLocaleNames(movieMap, resources, MOVIE_GENRE_IDS, false);
+            addLocaleNames(showMap, resources, SHOW_GENRE_IDS, true);
+            addLegacyLocaleNames(legacyMap, resources);
+        }
+
+        // Common English aliases returned by NFO files or older scrapers
+        movieMap.putIfAbsent("sci-fi", 878);
+        movieMap.putIfAbsent("scifi", 878);
+        movieMap.putIfAbsent("science-fiction", 878);
+        showMap.putIfAbsent("action and adventure", 10759);
+        showMap.putIfAbsent("war and politics", 10768);
+        showMap.putIfAbsent("アクション & アドベンチャー", 10759);
+        showMap.putIfAbsent("アクション＆アドベンチャー", 10759);
+        legacyMap.putIfAbsent("sci-fi", R.string.tv_show_genre_science_fiction);
+        legacyMap.putIfAbsent("scifi", R.string.tv_show_genre_science_fiction);
+        legacyMap.putIfAbsent("science-fiction", R.string.tv_show_genre_science_fiction);
+        legacyMap.putIfAbsent("sports", R.string.tv_show_genre_sport);
+        legacyMap.putIfAbsent("miniseries", R.string.tv_show_genre_mini_series);
+        legacyMap.putIfAbsent("home & garden", R.string.tv_show_genre_home_garden);
+
+        sMovieNameToId = Collections.unmodifiableMap(movieMap);
+        sShowNameToId = Collections.unmodifiableMap(showMap);
+        sLegacyGenreNameToRes = Collections.unmodifiableMap(legacyMap);
     }
 
     private static void addLocaleNames(Map<String, Integer> map, Resources resources, int[] ids, boolean isShow) {
@@ -355,9 +509,24 @@ public final class GenreUtils {
             if (res == 0) {
                 continue;
             }
-            String name = resources.getString(res);
-            if (name != null) {
-                map.putIfAbsent(name.trim().toLowerCase(Locale.ROOT), id);
+            try {
+                String name = resources.getString(res);
+                if (name != null) {
+                    map.putIfAbsent(name.trim().toLowerCase(Locale.ROOT), id);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static void addLegacyLocaleNames(Map<String, Integer> map, Resources resources) {
+        for (int res : LEGACY_SHOW_GENRE_STRINGS) {
+            try {
+                String name = resources.getString(res);
+                if (name != null) {
+                    map.putIfAbsent(name.trim().toLowerCase(Locale.ROOT), res);
+                }
+            } catch (Exception ignored) {
             }
         }
     }

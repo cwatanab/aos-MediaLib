@@ -57,11 +57,14 @@ public abstract class VideoTags extends BaseTags {
 
     /**
      * Localized genre display string derived from the stored genre ids for the current app locale,
-     * falling back to the stored (scrape-time localized) string when no ids are available.
+     * falling back to translating each token of the stored genre string when no ids are available.
      */
     public String getGenresFormatted(android.content.Context context) {
         String derived = GenreUtils.formatGenreNames(context, mGenreIds, isShowTags());
-        return derived != null ? derived : getGenresFormatted();
+        if (derived != null) {
+            return derived;
+        }
+        return GenreUtils.localizeGenreList(context, getGenresFormatted(), isShowTags());
     }
 
     /** Whether this tag describes a show (true) or a movie (false). */

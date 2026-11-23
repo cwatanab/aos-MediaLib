@@ -17,6 +17,7 @@ package com.archos.mediascraper;
 import static org.junit.Assert.*;
 
 import android.content.Context;
+import android.content.res.Configuration;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -30,6 +31,7 @@ import org.robolectric.annotation.Config;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Locale;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 33, qualifiers = "en")
@@ -108,5 +110,35 @@ public class GenreUtilsTest {
         assertTrue(sql.startsWith("genre.name_genre NOT IN ("));
         assertTrue(sql.contains("'Animation'"));
         assertTrue(sql.contains("'Animazione'"));
+    }
+
+    @Test
+    public void japaneseLocaleTranslatesEnglishCrossDomainAndLegacyGenres() {
+        Configuration jaConfig = new Configuration(context.getResources().getConfiguration());
+        jaConfig.setLocale(Locale.JAPANESE);
+        Context jaContext = context.createConfigurationContext(jaConfig);
+
+        // Movie & Show TMDB genres from English
+        assertEquals("コメディ", GenreUtils.getGenreDisplayName(jaContext, "Comedy", false));
+        assertEquals("SF", GenreUtils.getGenreDisplayName(jaContext, "Science Fiction", false));
+        assertEquals("アクション", GenreUtils.getGenreDisplayName(jaContext, "Action & Adventure", true));
+        assertEquals("アクション", GenreUtils.getGenreDisplayName(jaContext, "アクション & アドベンチャー", true));
+        assertEquals("SF & ファンタジー", GenreUtils.getGenreDisplayName(jaContext, "Sci-Fi & Fantasy", true));
+        assertEquals("戦争 & 政治", GenreUtils.getGenreDisplayName(jaContext, "War & Politics", true));
+
+        // Cross-domain fallback: movie genre stored on a show (or show genre on a movie)
+        assertEquals("SF", GenreUtils.getGenreDisplayName(jaContext, "Science Fiction", true));
+        assertEquals("ファンタジー", GenreUtils.getGenreDisplayName(jaContext, "Fantasy", true));
+
+        // Legacy TVDB genres & aliases
+        assertEquals("ミニシリーズ", GenreUtils.getGenreDisplayName(jaContext, "Mini-Series", true));
+        assertEquals("サスペンス", GenreUtils.getGenreDisplayName(jaContext, "Suspense", true));
+        assertEquals("トーク", GenreUtils.getGenreDisplayName(jaContext, "Talk Show", true));
+        assertEquals("ゲームショー", GenreUtils.getGenreDisplayName(jaContext, "Game Show", true));
+        assertEquals("SF", GenreUtils.getGenreDisplayName(jaContext, "Sci-Fi", false));
+
+        // Comma-separated list localization with deduplication
+        assertEquals("アクション, SF, サスペンス",
+                GenreUtils.localizeGenreList(jaContext, "Action, Science Fiction, Sci-Fi, Suspense", true));
     }
 }
